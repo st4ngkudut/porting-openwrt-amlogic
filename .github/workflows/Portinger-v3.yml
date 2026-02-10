@@ -1,0 +1,283 @@
+name: Porting Openwrt V3 ( BETA TEST )
+
+on:
+  workflow_dispatch:
+    inputs:
+      img_url:
+        description: "URL firmware sumber (.img, .img.gz, .img.xz, .rar, .zip)"
+        required: true
+      openwrt_board:
+        description: "Pilih metode build dari file .txt"
+        required: true
+        type: choice
+        options:
+          - '[Build dari file: amlogic.txt]'
+          - all
+          - top50
+          - rest50
+          - a311d-oes_s905d_s905x3_s922x-ct2000_wxy-oect
+          - a311d
+          - a311d-oes
+          - alark35-3500
+          - anas3035
+          - beikeyun
+          - chainedbox
+          - crrc
+          - dc-a588
+          - dg3399
+          - dg-tn3568
+          - dlfr100
+          - e20c
+          - e25
+          - eaidk-610
+          - emb3531
+          - fine3399
+          - firefly-rk3399
+          - fmx1-pro
+          - jp-tvbox
+          - h28k
+          - h66k
+          - h68k
+          - h69k
+          - h88k
+          - h88k-v3
+          - h96-max-m2
+          - hs530r
+          - hugsun-x99
+          - ipc-r
+          - king3399
+          - kylin3399
+          - lckfb-tspi
+          - leez
+          - lx-r3s
+          - mrkaio-m68s
+          - nanopc-t6
+          - nanopi-r5c
+          - nanopi-r5s
+          - orangepi-5-plus
+          - orangepi-5b
+          - panther-x2
+          - r66s
+          - r68s
+          - renegade-rk3328
+          - rk3318-box
+          - rock5b
+          - rock5c
+          - ruisen-box
+          - s905
+          - s905d
+          - s905l
+          - s905l2
+          - s905l3
+          - s905x
+          - s905x2
+          - s905x3
+          - s912
+          - s922x
+          - wxy-oect
+      openwrt_kernel:
+        description: "Pilih versi kernel"
+        required: true
+        default: "5.15.y_6.1.y"
+        type: choice
+        options:
+          - 5.4.y
+          - 5.10.y
+          - 5.15.y
+          - 6.1.y
+          - 6.6.y
+          - 5.4.y_5.10.y
+          - 5.15.y_6.1.y
+          - 6.1.y_6.6.y
+      builder_name:
+        description: "Set Nama Builder"
+        required: false
+        default: "ST4NGKUDUT"
+
+env:
+  TZ: Asia/Jakarta
+
+jobs:
+  prepare:
+    runs-on: ubuntu-22.04
+    if: ${{ github.event.repository.owner.id }} == ${{ github.event.sender.id }}
+    outputs:
+      date: ${{ steps.date.outputs.date }}
+      devices_json: ${{ steps.generate_list.outputs.json_array }}
+      devices_string: ${{ steps.generate_list.outputs.string_list }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 1. Generate Device List (Conditional Logic)
+        id: generate_list
+        run: |
+          INPUT_BOARD="${{ inputs.openwrt_board }}"
+          JSON_ARRAY=""
+          STRING_LIST=""
+
+          if [[ "$INPUT_BOARD" == \[Build\ dari\ file:* ]]; then
+            FILENAME=$(echo "$INPUT_BOARD" | sed -e 's/\[Build dari file: \(.*\)\]/\1/')
+            echo "Mode multi-device, file: $FILENAME"
+
+            if [ ! -f "$FILENAME" ]; then
+              echo "::error::$FILENAME tidak ditemukan"
+              exit 1
+            fi
+
+            STRING_LIST=$(grep -v '^#' "$FILENAME" | tr '\n' ',' | sed 's/,$//')
+            JSON_ARRAY=$(grep -v '^#' "$FILENAME" | awk '{printf "\"%s\",",$0}' | sed 's/,$//')
+            JSON_ARRAY="[$JSON_ARRAY]"
+          else
+            STRING_LIST="$INPUT_BOARD"
+            JSON_ARRAY="[\"$INPUT_BOARD\"]"
+          fi
+
+          echo "json_array=$JSON_ARRAY" >> $GITHUB_OUTPUT
+          echo "string_list=$STRING_LIST" >> $GITHUB_OUTPUT
+
+      - name: 2. Inisialisasi Environment & Install Dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -e
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+          sudo swapoff -a || true
+          sudo rm -f /swapfile || true
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            wget unzip unrar p7zip-full xz-utils gzip \
+            python3 python3-pip losetup util-linux
+          sudo pip3 install gdown
+          curl https://sh.rustup.rs -sSf | sh -s -- -y
+          source "$HOME/.cargo/env"
+          cargo install mediafire_rs
+          sudo timedatectl set-timezone "$TZ"
+
+      - name: 3. Download, Deteksi, dan Dekompresi Otomatis
+        run: |
+          set -e
+          URL="${{ inputs.img_url }}"
+          echo "Download dari: $URL"
+
+          mkdir -p download_tmp
+          cd download_tmp
+
+          if grep -q "drive.google.com" <<< "$URL"; then
+            gdown --fuzzy "$URL"
+          elif grep -q "mediafire.com" <<< "$URL"; then
+            mdrs "$URL"
+          elif grep -q "mega.nz" <<< "$URL"; then
+            mega-get "$URL"
+          else
+            wget --no-check-certificate "$URL"
+          fi
+
+          echo "File terunduh:"
+          ls -lh
+
+          SRC_FILE=$(ls -t | head -n 1)
+          echo "File dipakai: $SRC_FILE"
+
+          cd ..
+          mv "download_tmp/$SRC_FILE" source_file.download
+
+          FILE_TYPE=$(file -b source_file.download)
+          echo "Tipe file: $FILE_TYPE"
+
+          case "$FILE_TYPE" in
+            *"gzip compressed data"*)
+              mv source_file.download source_file.img.gz
+              gunzip source_file.img.gz
+              ;;
+            *"XZ compressed data"*)
+              mv source_file.download source_file.img.xz
+              unxz source_file.img.xz
+              ;;
+            *"RAR archive data"*)
+              unrar x source_file.download
+              mv *.img source_file.img
+              ;;
+            *"Zip archive data"*)
+              unzip source_file.download
+              mv *.img source_file.img
+              ;;
+            *"boot sector"*)
+              mv source_file.download source_file.img
+              ;;
+            *)
+              echo "::error::Format file tidak dikenali"
+              exit 1
+              ;;
+          esac
+
+          test -f source_file.img || (echo "::error::IMG tidak ditemukan" && exit 1)
+
+      - name: 4. Ekstrak RootFS dari Firmware
+        run: |
+          set -e
+          mkdir -p rootfs_mount extracted-rootfs
+          LOOP=$(sudo losetup -fP --show source_file.img)
+          sudo mount "${LOOP}p2" rootfs_mount
+          (cd rootfs_mount && sudo tar czf ../extracted-rootfs/openwrt-rootfs.tar.gz .)
+          sudo umount rootfs_mount
+          sudo losetup -d "$LOOP"
+          sudo chown -R $(whoami):$(id -gn) extracted-rootfs
+
+      - name: 5. Upload RootFS sebagai Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-rootfs
+          path: extracted-rootfs/openwrt-rootfs.tar.gz
+
+      - name: Get build date
+        id: date
+        run: echo "date=$(date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_OUTPUT
+
+  build_matrix:
+    runs-on: ubuntu-22.04
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        board: ${{ fromJson(needs.prepare.outputs.devices_json) }}
+
+    steps:
+      - name: Download RootFS Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: openwrt-rootfs
+
+      - name: Build OpenWrt ${{ matrix.board }}
+        uses: ophub/amlogic-s9xxx-openwrt@main
+        with:
+          openwrt_path: openwrt-rootfs.tar.gz
+          openwrt_board: ${{ matrix.board }}
+          openwrt_kernel: ${{ inputs.openwrt_kernel }}
+          builder_name: ${{ inputs.builder_name }}
+
+      - name: Upload Firmware
+        if: env.PACKAGED_STATUS == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-firmware-${{ matrix.board }}
+          path: ${{ env.PACKAGED_OUTPUTPATH }}/*
+
+  release:
+    runs-on: ubuntu-22.04
+    needs: [prepare, build_matrix]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: compiled-firmware
+
+      - name: Upload ke GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "compiled-firmware/*/*"
+          tag: "Build-${{ github.run_id }}"
+          name: "OpenWrt Ported | ${{ needs.prepare.outputs.date }}"
+          allowUpdates: true
+          replacesArtifacts: true
+          token: ${{ secrets.GITHUB_TOKEN }}
