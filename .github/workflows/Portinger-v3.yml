@@ -136,23 +136,27 @@ jobs:
 
           echo "json_array=$JSON_ARRAY" >> $GITHUB_OUTPUT
           echo "string_list=$STRING_LIST" >> $GITHUB_OUTPUT
-
+          
       - name: 2. Inisialisasi Environment & Install Dependencies
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           set -e
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
-          sudo swapoff -a || true
-          sudo rm -f /swapfile || true
+          sudo swapoff -a
+          sudo rm -f /swapfile
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            wget unzip unrar p7zip-full xz-utils gzip \
-            python3 python3-pip losetup util-linux
+            $(curl -fsSL https://tinyurl.com/ubuntu2204-make-openwrt) \
+            python3 python3-pip wget p7zip-full
           sudo pip3 install gdown
           curl https://sh.rustup.rs -sSf | sh -s -- -y
           source "$HOME/.cargo/env"
           cargo install mediafire_rs
+          megacmd_ver=$(cat /etc/*ease | grep "DISTRIB_RELEASE" | awk -F "=" '{print $2}')
+          wget https://mega.nz/linux/repo/xUbuntu_${megacmd_ver}/amd64/megacmd-xUbuntu_${megacmd_ver}_amd64.deb
+          sudo apt-get install -y "./megacmd-xUbuntu_${megacmd_ver}_amd64.deb"
+          rm "./megacmd-xUbuntu_${megacmd_ver}_amd64.deb"
           sudo timedatectl set-timezone "$TZ"
 
       - name: 3. Download, Deteksi, dan Dekompresi Otomatis
