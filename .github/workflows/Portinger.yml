@@ -1,4 +1,4 @@
-name: Porting Openwrt Amlogic
+name: ST4Porting Openwrt Amlogic
 
 on:
   workflow_dispatch:
