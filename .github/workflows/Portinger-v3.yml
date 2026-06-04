@@ -1,17 +1,22 @@
-name: ST4Porting Openwrt Amlogic v3
+name: ST4Porting Openwrt Amlogic V3
 
 on:
   workflow_dispatch:
     inputs:
       img_url:
-        description: "URL firmware sumber (.img, .img.gz, .img.xz, .rar, .zip)"
+        description: "URL firmware sumber (.img, .img.gz, .img.xz)"
         required: true
       openwrt_board:
         description: "Pilih metode build dari file .txt"
         required: true
         type: choice
         options:
+          # --- OPSI BUILD DARI FILE ---
+          # Tambahkan entri di sini untuk setiap file .txt yang Anda buat.
+          # Pastikan nama file di dalam kurung siku sama persis dengan nama file di repo Anda.
           - '[Build dari file: amlogic.txt]'
+          
+          # --- OPSI BUILD SINGLE DEVICE ---
           - all
           - top50
           - rest50
@@ -65,16 +70,111 @@ on:
           - rock5c
           - ruisen-box
           - s905
+          - s905-beelink-mini
+          - s905-mxqpro-plus
           - s905d
+          - s905d-ki-pro
+          - s905d-sml5442tw
           - s905l
+          - s905l-aurora-1s
+          - s905l-b860av21u
+          - s905l-mg101
           - s905l2
+          - s905l2-e900v21e
+          - s905l2-wojia
           - s905l3
+          - s905l3-cm211
+          - s905l3-unt400g1
+          - s905l3-unt402a
+          - s905l3a
+          - s905l3a-cm311
+          - s905l3a-m401a
+          - s905l3b
+          - s905l3b-e900v21d
+          - s905l3b-e900v22d
+          - s905l3b-e900v22e
+          - s905l3b-ip103h
+          - s905l3b-rg020et-ca
+          - s905l3b-unt403a
+          - s905lb-ipbs9505
+          - s905lb-q96-mini
+          - s905lb-r3300l
+          - s905mb
+          - s905w
+          - s905w-w95
+          - s905w-x96-mini
+          - s905w-x96w
           - s905x
+          - s905x-b860h
+          - s905x-nexbox-a95x
+          - s905x-t95
+          - s905x-tbee
+          - s905x-tx9
           - s905x2
+          - s905x2-km3
+          - s905x2-x96max-2g
           - s905x3
+          - s905x3-2101
+          - s905x3-a100
+          - s905x3-a95xf3
+          - s905x3-a95xf3-gb
+          - s905x3-b
+          - s905x3-h96max
+          - s905x3-hk1
+          - s905x3-ip1001m
+          - s905x3-q1
+          - s905x3-q2
+          - s905x3-tx3
+          - s905x3-tx3-bz
+          - s905x3-ugoosx3
+          - s905x3-whale
+          - s905x3-x88-pro-x3
+          - s905x3-x96air
+          - s905x3-x96air-gb
+          - s905x3-x96max
           - s912
+          - s912-h96pro-plus
+          - s912-m8s-pro
+          - s912-nexbox-a1
+          - s912-nexbox-a2
+          - s912-onecloudpro
+          - s912-phicomm-t1
+          - s912-t95z-plus
+          - s912-tx8-max
+          - s912-tx9-pro-2g
+          - s912-tx9-pro-3g
+          - s912-x92
+          - s912-zyxq-fake
           - s922x
+          - s922x-ct2000
+          - s922x-gtking
+          - s922x-gtkingpro-h
+          - s922x-odroid-n2
+          - s922x-oes-plus
+          - s922x-reva
+          - s922x-ugoos-am6
+          - seewo-sv21
+          - smart-am40
+          - smart-am60
+          - station-m1
+          - station-m2
+          - sv-33a6x
+          - swan1-w28
+          - sw799
+          - tanix-tx6
+          - tb-ls3399
+          - tn3399
+          - tpm312
+          - tqc-a01
+          - tvi315a
+          - vplus
           - wxy-oect
+          - wxy-oect-replaced
+          - xiaobao
+          - yskj
+          - zcube1-max
+          - zk-r39a
+          - zysj
       openwrt_kernel:
         description: "Pilih versi kernel"
         required: true
@@ -93,6 +193,10 @@ on:
         description: "Set Nama Builder"
         required: false
         default: "ST4NGKUDUT"
+      custom_dtb_path:
+        description: "Lokasi file .dtb di repo (misal: custom-dtb/file.dtb). Kosongkan jika tidak perlu."
+        required: false
+        default: ""
 
 env:
   TZ: Asia/Jakarta
@@ -118,25 +222,36 @@ jobs:
           STRING_LIST=""
 
           if [[ "$INPUT_BOARD" == \[Build\ dari\ file:* ]]; then
+            # --- MODE BUILD DARI FILE ---
             FILENAME=$(echo "$INPUT_BOARD" | sed -e 's/\[Build dari file: \(.*\)\]/\1/')
-            echo "Mode multi-device, file: $FILENAME"
-
+            echo "Mode multi-device terdeteksi. Membaca dari file: '$FILENAME'"
             if [ ! -f "$FILENAME" ]; then
-              echo "::error::$FILENAME tidak ditemukan"
+              echo "::error file=$FILENAME::File '$FILENAME' tidak ditemukan di repository."
               exit 1
             fi
+            
+            STRING_LIST=$(tr '\n' ' ' < "$FILENAME" | sed 's/ $//' | sed 's/ /, /g')
+            
+            JSON_STR='['
+            while read -r line; do
+              if [[ -n "$line" && ! "$line" =~ ^\s*# ]]; then
+                JSON_STR+="\"$line\","
+              fi
+            done < "$FILENAME"
+            JSON_ARRAY=$(echo "${JSON_STR%,}" | sed 's/,$//')']'
 
-            STRING_LIST=$(grep -v '^#' "$FILENAME" | tr '\n' ',' | sed 's/,$//')
-            JSON_ARRAY=$(grep -v '^#' "$FILENAME" | awk '{printf "\"%s\",",$0}' | sed 's/,$//')
-            JSON_ARRAY="[$JSON_ARRAY]"
           else
-            STRING_LIST="$INPUT_BOARD"
+            # --- MODE BUILD SINGLE DEVICE ---
+            echo "Mode single device terdeteksi untuk board: '$INPUT_BOARD'"
             JSON_ARRAY="[\"$INPUT_BOARD\"]"
+            STRING_LIST="$INPUT_BOARD"
           fi
 
+          echo "Daftar device untuk build: $STRING_LIST"
+          echo "JSON untuk matrix: $JSON_ARRAY"
           echo "json_array=$JSON_ARRAY" >> $GITHUB_OUTPUT
           echo "string_list=$STRING_LIST" >> $GITHUB_OUTPUT
-          
+
       - name: 2. Inisialisasi Environment & Install Dependencies
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -158,76 +273,66 @@ jobs:
           sudo apt-get install -y "./megacmd-xUbuntu_${megacmd_ver}_amd64.deb"
           rm "./megacmd-xUbuntu_${megacmd_ver}_amd64.deb"
           sudo timedatectl set-timezone "$TZ"
-
+          
       - name: 3. Download, Deteksi, dan Dekompresi Otomatis
         run: |
           set -e
-          URL="${{ inputs.img_url }}"
-          echo "Download dari: $URL"
-
-          mkdir -p download_tmp
-          cd download_tmp
-
-          if grep -q "drive.google.com" <<< "$URL"; then
-            gdown --fuzzy "$URL"
-          elif grep -q "mediafire.com" <<< "$URL"; then
-            mdrs "$URL"
-          elif grep -q "mega.nz" <<< "$URL"; then
-            mega-get "$URL"
+          echo "Memulai download dari: ${{ inputs.img_url }}"
+          if grep -q "drive.google.com" <<< "${{ inputs.img_url }}"; then
+            gdown --fuzzy "${{ inputs.img_url }}" -O source_file.download
+          elif grep -q "mediafire.com" <<< "${{ inputs.img_url }}"; then
+            mdrs "${{ inputs.img_url }}" && mv * source_file.download
+          elif grep -q "mega.nz" <<< "${{ inputs.img_url }}"; then
+            mega-get "${{ inputs.img_url }}" . && mv * source_file.download
           else
-            wget --no-check-certificate "$URL"
+            wget --no-check-certificate "${{ inputs.img_url }}" -O source_file.download
           fi
-
-          echo "File terunduh:"
-          ls -lh
-
-          SRC_FILE=$(ls -t | head -n 1)
-          echo "File dipakai: $SRC_FILE"
-
-          cd ..
-          mv "download_tmp/$SRC_FILE" source_file.download
-
+          echo "Download selesai. Ukuran file:"
+          ls -lh source_file.download
+          echo "--> Mendeteksi tipe file secara otomatis..."
           FILE_TYPE=$(file -b source_file.download)
-          echo "Tipe file: $FILE_TYPE"
-
+          echo "Tipe file terdeteksi: $FILE_TYPE"
           case "$FILE_TYPE" in
             *"gzip compressed data"*)
+              echo "Format Gzip terdeteksi. Mendekompresi..."
               mv source_file.download source_file.img.gz
               gunzip source_file.img.gz
               ;;
             *"XZ compressed data"*)
+              echo "Format XZ terdeteksi. Mendekompresi..."
               mv source_file.download source_file.img.xz
               unxz source_file.img.xz
               ;;
-            *"RAR archive data"*)
-              unrar x source_file.download
-              mv *.img source_file.img
-              ;;
-            *"Zip archive data"*)
-              unzip source_file.download
-              mv *.img source_file.img
-              ;;
             *"boot sector"*)
+              echo "Format IMG mentah terdeteksi. Melewatkan dekompresi."
               mv source_file.download source_file.img
               ;;
             *)
-              echo "::error::Format file tidak dikenali"
+              echo "Error: Format file tidak dikenal atau file korup! Tidak dapat melanjutkan."
               exit 1
               ;;
           esac
-
-          test -f source_file.img || (echo "::error::IMG tidak ditemukan" && exit 1)
-
+          if [ ! -f source_file.img ]; then
+              echo "Error: File 'source_file.img' tidak ditemukan setelah proses deteksi/dekompresi."
+              exit 1
+          fi
+          echo "File 'source_file.img' siap digunakan."
+          
       - name: 4. Ekstrak RootFS dari Firmware
         run: |
           set -e
           mkdir -p rootfs_mount extracted-rootfs
-          LOOP=$(sudo losetup -fP --show source_file.img)
-          sudo mount "${LOOP}p2" rootfs_mount
-          (cd rootfs_mount && sudo tar czf ../extracted-rootfs/openwrt-rootfs.tar.gz .)
-          sudo umount rootfs_mount
-          sudo losetup -d "$LOOP"
+          echo "Memasang partisi dari file source_file.img..."
+          losetup_device=$(sudo losetup -fP --show source_file.img)
+          sudo mount "${losetup_device}p2" rootfs_mount
+          echo "Membuat arsip rootfs..."
+          (cd rootfs_mount && sudo tar cfz ../extracted-rootfs/openwrt-rootfs.tar.gz *)
+          echo "Mengubah kepemilikan file & grup ke pengguna runner..."
           sudo chown -R $(whoami):$(id -gn) extracted-rootfs
+          echo "Melepas mount..."
+          sudo umount rootfs_mount
+          sudo losetup -d "${losetup_device}"
+          echo "Ekstraksi Rootfs berhasil."
 
       - name: 5. Upload RootFS sebagai Artifact
         uses: actions/upload-artifact@v4
@@ -237,32 +342,103 @@ jobs:
 
       - name: Get build date
         id: date
-        run: echo "date=$(date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_OUTPUT
+        run: echo "date=$(date +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_OUTPUT
 
   build_matrix:
     runs-on: ubuntu-22.04
+    if: ${{ github.event.repository.owner.id }} == ${{ github.event.sender.id }}
     needs: prepare
     strategy:
       fail-fast: false
       matrix:
         board: ${{ fromJson(needs.prepare.outputs.devices_json) }}
-
+        
     steps:
-      - name: Download RootFS Artifact
+      - name: 0. Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 1. Download RootFS Artifact
         uses: actions/download-artifact@v4
         with:
           name: openwrt-rootfs
 
-      - name: Build OpenWrt ${{ matrix.board }}
+      - name: 2. Remake Firmware OpenWrt untuk ${{ matrix.board }}
         uses: ophub/amlogic-s9xxx-openwrt@main
         with:
-          openwrt_path: openwrt-rootfs.tar.gz
+          openwrt_path: 'openwrt-rootfs.tar.gz'
           openwrt_board: ${{ matrix.board }}
           openwrt_kernel: ${{ inputs.openwrt_kernel }}
           builder_name: ${{ inputs.builder_name }}
+          kernel_repo: 'ophub/kernel'
+          auto_kernel: true
+          kernel_usage: 'stable'
 
-      - name: Upload Firmware
-        if: env.PACKAGED_STATUS == 'success'
+      - name: 2.5. Import Custom DTB ke Folder DTB (Opsional)
+        if: inputs.custom_dtb_path != '' && env.PACKAGED_STATUS == 'success'
+        run: |
+          set -e
+          DTB_PATH="${{ inputs.custom_dtb_path }}"
+          DTB_FILENAME=$(basename "$DTB_PATH")
+          
+          echo "Mencari custom DTB di lokasi repositori: $DTB_PATH"
+          if [ ! -f "$DTB_PATH" ]; then
+            echo "::error::File DTB tidak ditemukan di $DTB_PATH!"
+            exit 1
+          fi
+          
+          cd ${{ env.PACKAGED_OUTPUTPATH }}
+          
+          FIRMWARE=$(ls *.img *.img.gz 2>/dev/null | head -n 1)
+          if [[ -z "$FIRMWARE" ]]; then
+            echo "::error::Firmware .img tidak ditemukan!"
+            exit 1
+          fi
+          
+          if [[ "$FIRMWARE" == *.gz ]]; then
+            echo "Mengekstrak $FIRMWARE..."
+            gunzip "$FIRMWARE"
+            IMG_FILE="${FIRMWARE%.gz}"
+          else
+            IMG_FILE="$FIRMWARE"
+          fi
+          
+          echo "Mount partisi boot dari $IMG_FILE..."
+          mkdir -p boot_mount
+          LOOP_DEV=$(sudo losetup -Pf --show "$IMG_FILE")
+          sudo mount "${LOOP_DEV}p1" boot_mount
+          
+          # Cari tahu direktori DTB yang digunakan sistem saat ini
+          FDT_DIR="/dtb" # Default fallback
+          if [ -f boot_mount/extlinux/extlinux.conf ]; then
+            FDT_DIR=$(grep "^[[:space:]]*FDT" boot_mount/extlinux/extlinux.conf | awk '{print $2}' | head -n 1 | xargs dirname)
+          elif [ -f boot_mount/uEnv.txt ]; then
+            FDT_DIR=$(grep "^FDT=" boot_mount/uEnv.txt | cut -d= -f2 | head -n 1 | xargs dirname)
+          fi
+          
+          LOCAL_DTB_DIR="boot_mount/${FDT_DIR#/}"
+          
+          echo "Folder DTB sistem ditemukan di: $FDT_DIR"
+          echo "Mengimpor file $DTB_FILENAME ke dalam folder tersebut..."
+          
+          sudo mkdir -p "$LOCAL_DTB_DIR"
+          sudo cp "$GITHUB_WORKSPACE/$DTB_PATH" "$LOCAL_DTB_DIR/$DTB_FILENAME"
+          
+          echo "Daftar isi folder DTB saat ini:"
+          ls -l "$LOCAL_DTB_DIR" | grep -i dtb
+          
+          echo "Unmount file image..."
+          sudo umount boot_mount
+          sudo losetup -d "$LOOP_DEV"
+          
+          if [[ "$FIRMWARE" == *.gz ]]; then
+            echo "Mengompres kembali menjadi .gz..."
+            gzip -9 "$IMG_FILE"
+          fi
+          
+          echo "Sukses: Custom DTB ($DTB_FILENAME) berhasil diimpor ke dalam image!"
+
+      - name: 3. Upload Firmware sebagai Artifact
+        if: env.PACKAGED_STATUS == 'success' && !cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: openwrt-firmware-${{ matrix.board }}
@@ -270,18 +446,27 @@ jobs:
 
   release:
     runs-on: ubuntu-22.04
+    if: ${{ github.event.repository.owner.id }} == ${{ github.event.sender.id }}
     needs: [prepare, build_matrix]
+    
     steps:
-      - uses: actions/download-artifact@v4
+      - name: 1. Download semua artifact firmware
+        uses: actions/download-artifact@v4
         with:
           path: compiled-firmware
-
-      - name: Upload ke GitHub Release
+      
+      - name: 2. Upload ke GitHub Releases
         uses: ncipollo/release-action@v1
         with:
           artifacts: "compiled-firmware/*/*"
           tag: "Build-${{ github.run_id }}"
           name: "OpenWrt Ported | ${{ needs.prepare.outputs.date }}"
+          body: |
+            ✅ **Porting Selesai** ✅
+            
+            - **Sumber**: `${{ inputs.img_url }}`
+            - **Target Board**: `${{ needs.prepare.outputs.devices_string }}`
+            - **Kernel**: `${{ inputs.openwrt_kernel }}`
           allowUpdates: true
           replacesArtifacts: true
           token: ${{ secrets.GITHUB_TOKEN }}
