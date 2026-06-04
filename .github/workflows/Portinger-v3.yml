@@ -1,4 +1,4 @@
-name: ST4Porting Openwrt Amlogic V3
+name: ST4Porting Openwrt Amlogic V2
 
 on:
   workflow_dispatch:
@@ -12,8 +12,6 @@ on:
         type: choice
         options:
           # --- OPSI BUILD DARI FILE ---
-          # Tambahkan entri di sini untuk setiap file .txt yang Anda buat.
-          # Pastikan nama file di dalam kurung siku sama persis dengan nama file di repo Anda.
           - '[Build dari file: amlogic.txt]'
           
           # --- OPSI BUILD SINGLE DEVICE ---
@@ -193,10 +191,6 @@ on:
         description: "Set Nama Builder"
         required: false
         default: "ST4NGKUDUT"
-      custom_dtb_path:
-        description: "Lokasi file .dtb di repo (misal: custom-dtb/file.dtb). Kosongkan jika tidak perlu."
-        required: false
-        default: ""
 
 env:
   TZ: Asia/Jakarta
@@ -222,7 +216,6 @@ jobs:
           STRING_LIST=""
 
           if [[ "$INPUT_BOARD" == \[Build\ dari\ file:* ]]; then
-            # --- MODE BUILD DARI FILE ---
             FILENAME=$(echo "$INPUT_BOARD" | sed -e 's/\[Build dari file: \(.*\)\]/\1/')
             echo "Mode multi-device terdeteksi. Membaca dari file: '$FILENAME'"
             if [ ! -f "$FILENAME" ]; then
@@ -241,7 +234,6 @@ jobs:
             JSON_ARRAY=$(echo "${JSON_STR%,}" | sed 's/,$//')']'
 
           else
-            # --- MODE BUILD SINGLE DEVICE ---
             echo "Mode single device terdeteksi untuk board: '$INPUT_BOARD'"
             JSON_ARRAY="[\"$INPUT_BOARD\"]"
             STRING_LIST="$INPUT_BOARD"
@@ -373,17 +365,18 @@ jobs:
           auto_kernel: true
           kernel_usage: 'stable'
 
-      - name: 2.5. Import Custom DTB ke Folder DTB (Opsional)
-        if: inputs.custom_dtb_path != '' && env.PACKAGED_STATUS == 'success'
+      - name: 2.5. Import Semua Custom DTB Otomatis
+        if: env.PACKAGED_STATUS == 'success'
         run: |
           set -e
-          DTB_PATH="${{ inputs.custom_dtb_path }}"
-          DTB_FILENAME=$(basename "$DTB_PATH")
+          CUSTOM_DTB_DIR="$GITHUB_WORKSPACE/custom-dtb"
           
-          echo "Mencari custom DTB di lokasi repositori: $DTB_PATH"
-          if [ ! -f "$DTB_PATH" ]; then
-            echo "::error::File DTB tidak ditemukan di $DTB_PATH!"
-            exit 1
+          # Cek apakah folder ada dan berisi file .dtb
+          if [ -d "$CUSTOM_DTB_DIR" ] && ls "$CUSTOM_DTB_DIR"/*.dtb 1> /dev/null 2>&1; then
+            echo "Menemukan file .dtb di folder custom-dtb/. Memulai import..."
+          else
+            echo "Tidak ada file .dtb di folder custom-dtb/ atau folder tidak ada. Melewati proses import."
+            exit 0
           fi
           
           cd ${{ env.PACKAGED_OUTPUTPATH }}
@@ -418,10 +411,10 @@ jobs:
           LOCAL_DTB_DIR="boot_mount/${FDT_DIR#/}"
           
           echo "Folder DTB sistem ditemukan di: $FDT_DIR"
-          echo "Mengimpor file $DTB_FILENAME ke dalam folder tersebut..."
+          echo "Menyalin SEMUA file custom DTB ke dalam folder tersebut..."
           
           sudo mkdir -p "$LOCAL_DTB_DIR"
-          sudo cp "$GITHUB_WORKSPACE/$DTB_PATH" "$LOCAL_DTB_DIR/$DTB_FILENAME"
+          sudo cp "$CUSTOM_DTB_DIR"/*.dtb "$LOCAL_DTB_DIR/"
           
           echo "Daftar isi folder DTB saat ini:"
           ls -l "$LOCAL_DTB_DIR" | grep -i dtb
@@ -435,7 +428,7 @@ jobs:
             gzip -9 "$IMG_FILE"
           fi
           
-          echo "Sukses: Custom DTB ($DTB_FILENAME) berhasil diimpor ke dalam image!"
+          echo "Sukses: Semua custom DTB berhasil diimpor ke dalam image!"
 
       - name: 3. Upload Firmware sebagai Artifact
         if: env.PACKAGED_STATUS == 'success' && !cancelled()
