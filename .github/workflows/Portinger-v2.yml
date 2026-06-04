@@ -275,7 +275,7 @@ jobs:
           set -e
           echo "Memulai download dari: ${{ inputs.img_url }}"
           if grep -q "drive.google.com" <<< "${{ inputs.img_url }}"; then
-            gdown --fuzzy "${{ inputs.img_url }}" -O source_file.download
+            gdown "${{ inputs.img_url }}" -O source_file.download
           elif grep -q "mediafire.com" <<< "${{ inputs.img_url }}"; then
             mdrs "${{ inputs.img_url }}" && mv * source_file.download
           elif grep -q "mega.nz" <<< "${{ inputs.img_url }}"; then
