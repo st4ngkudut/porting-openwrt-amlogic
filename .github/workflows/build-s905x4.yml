@@ -616,7 +616,7 @@ jobs:
           echo "Builder: ${{ inputs.builder_name }}"
           echo "========================================"
 
-          ./remake \
+          sudo ./remake \
             -b "${{ inputs.openwrt_board }}" \
             -k 6.6.66 \
             -a false \
