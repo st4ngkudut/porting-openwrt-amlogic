@@ -371,7 +371,7 @@ jobs:
           find \
             modules-files \
             -type f \
-            | head -100
+            | head -100 || true
 
       - name: 6. Locate Selected DTB
         shell: bash
@@ -384,7 +384,7 @@ jobs:
               -type f \
               -name '${{ inputs.dtb }}' \
               -print \
-              | head -n 1
+              | head -n 1 || true
           )"
 
           test -n "$DTB_PATH" || {
@@ -438,7 +438,7 @@ jobs:
           find \
             package-rootfs/lib/modules/6.6.66 \
             -type f \
-            | head -100
+            | head -100 || true
 
       - name: 9. Install Custom DTB
         shell: bash
@@ -473,7 +473,7 @@ jobs:
               -type d \
               -name 'boot-6.6.66' \
               -print \
-              | head -n 1
+              | head -n 1 || true
           )"
 
           if [ -z "$KROOT" ]; then
@@ -579,7 +579,7 @@ jobs:
             -nE \
             'kernel_repo|openwrt_path|specific_kernel|replace_kernel|download_kernel' \
             remake \
-            | head -100
+            | head -100 || true
 
       - name: 15. Prepare Local Kernel Cache
         shell: bash
