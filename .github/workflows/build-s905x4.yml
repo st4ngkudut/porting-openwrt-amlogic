@@ -4,7 +4,6 @@ on:
 workflow_dispatch:
 inputs:
 
-
   img_url:
     description: "URL firmware sumber (.img, .img.gz, .img.xz)"
     required: true
@@ -33,7 +32,6 @@ inputs:
     default: "ST4NGKUDUT"
     type: string
 
-
 env:
 TZ: Asia/Jakarta
 KERNEL_VERSION: 6.6.66
@@ -44,7 +42,6 @@ jobs:
 prepare:
 name: Prepare OpenWrt RootFS
 runs-on: ubuntu-22.04
-
 
 if: ${{ github.event.repository.owner.id == github.event.sender.id }}
 
@@ -290,11 +287,9 @@ steps:
         sudo losetup -d "$LOOPDEV" 2>/dev/null || true
       fi
 
-
 build:
 name: Build S905X4 / Kernel 6.6.66
 runs-on: ubuntu-22.04
-
 
 if: ${{ github.event.repository.owner.id == github.event.sender.id }}
 
@@ -721,7 +716,6 @@ steps:
 release:
 name: Publish GitHub Release
 runs-on: ubuntu-22.04
-
 
 if: ${{ github.event.repository.owner.id == github.event.sender.id }}
 
