@@ -45,21 +45,25 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "=== Custom kernel files ==="
+          echo "=========================================="
+          echo " Checking custom kernel"
+          echo "=========================================="
 
-          required_files=(
+          REQUIRED_FILES=(
             "${KERNEL_DIR}/boot-6.6.66.tar.gz"
             "${KERNEL_DIR}/dtb-amlogic-6.6.66.tar.gz"
             "${KERNEL_DIR}/modules-6.6.66.tar.gz"
           )
 
-          for file in "${required_files[@]}"; do
-            if [ ! -f "$file" ]; then
-              echo "::error::Missing file: $file"
+          for FILE in "${REQUIRED_FILES[@]}"; do
+            if [ ! -f "$FILE" ]; then
+              echo "::error::Missing file: $FILE"
               exit 1
             fi
 
-            ls -lh "$file"
+            echo
+            echo "Found:"
+            ls -lh "$FILE"
           done
 
       # ============================================================
@@ -67,9 +71,12 @@ jobs:
       # ============================================================
 
       - name: Install dependencies
+        shell: bash
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
+          set -euo pipefail
+
           sudo apt-get update
 
           sudo apt-get install -y \
@@ -100,7 +107,10 @@ jobs:
 
           URL="${{ inputs.img_url }}"
 
-          echo "Downloading:"
+          echo "=========================================="
+          echo " Downloading source image"
+          echo "=========================================="
+
           echo "$URL"
 
           curl \
@@ -113,13 +123,15 @@ jobs:
             -o source.download
 
           echo
-          echo "=== Downloaded file ==="
-
+          echo "Downloaded:"
           ls -lh source.download
+
+          echo
+          echo "File type:"
           file source.download
 
       # ============================================================
-      # DECOMPRESS IMAGE
+      # DECOMPRESS SOURCE IMAGE
       # ============================================================
 
       - name: Decompress source image
@@ -129,7 +141,7 @@ jobs:
 
           TYPE="$(file -b source.download)"
 
-          echo "Detected:"
+          echo "Detected image type:"
           echo "$TYPE"
 
           case "$TYPE" in
@@ -157,21 +169,27 @@ jobs:
               ;;
 
             *)
-              echo "::error::Unknown image format"
+              echo "::error::Unknown source image format"
               echo "$TYPE"
               exit 1
               ;;
           esac
 
-          test -f source.img
+          if [ ! -f source.img ]; then
+            echo "::error::source.img was not created"
+            exit 1
+          fi
 
           echo
-          echo "=== Source image ==="
+          echo "=========================================="
+          echo " Source image"
+          echo "=========================================="
+
           ls -lh source.img
           file source.img
 
       # ============================================================
-      # INSPECT IMAGE BEFORE TOUCHING IT
+      # INSPECT SOURCE IMAGE
       # ============================================================
 
       - name: Inspect source image
@@ -179,19 +197,25 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "=== IMAGE SIZE ==="
-          ls -lh source.img
+          echo "=========================================="
+          echo " IMAGE INFORMATION"
+          echo "=========================================="
 
           echo
-          echo "=== fdisk ==="
+          echo "--- File ---"
+          ls -lh source.img
+          file source.img
+
+          echo
+          echo "--- fdisk ---"
           sudo fdisk -l source.img || true
 
           echo
-          echo "=== parted ==="
+          echo "--- parted ---"
           sudo parted source.img unit MiB print || true
 
           echo
-          echo "=== losetup ==="
+          echo "--- losetup ---"
 
           LOOPDEV="$(sudo losetup --find --show --partscan source.img)"
 
@@ -200,17 +224,24 @@ jobs:
           sleep 2
 
           echo
-          echo "=== lsblk ==="
-          lsblk -o NAME,PATH,SIZE,FSTYPE,LABEL,PARTLABEL,PARTTYPE,MOUNTPOINT "$LOOPDEV" || true
+          echo "--- lsblk ---"
+
+          lsblk \
+            -o NAME,PATH,SIZE,FSTYPE,LABEL,PARTLABEL,PARTTYPE,MOUNTPOINT \
+            "$LOOPDEV" || true
 
           echo
-          echo "=== blkid ==="
+          echo "--- blkid disk ---"
+
           sudo blkid "$LOOPDEV" || true
+
+          echo
+          echo "--- blkid partitions ---"
 
           for P in "${LOOPDEV}"p*; do
             if [ -b "$P" ]; then
               echo
-              echo "=== $P ==="
+              echo "Partition: $P"
               sudo blkid "$P" || true
             fi
           done
@@ -232,21 +263,29 @@ jobs:
           mkdir -p dtb-files
           mkdir -p modules-files
 
-          echo "=== Extract boot archive ==="
+          echo "=========================================="
+          echo " Extracting kernel archive"
+          echo "=========================================="
 
           tar \
             -xzf \
             "${KERNEL_DIR}/boot-6.6.66.tar.gz" \
             -C kernel-files
 
-          echo "=== Extract DTB archive ==="
+          echo
+          echo "=========================================="
+          echo " Extracting DTB archive"
+          echo "=========================================="
 
           tar \
             -xzf \
             "${KERNEL_DIR}/dtb-amlogic-6.6.66.tar.gz" \
             -C dtb-files
 
-          echo "=== Extract modules archive ==="
+          echo
+          echo "=========================================="
+          echo " Extracting modules archive"
+          echo "=========================================="
 
           tar \
             -xzf \
@@ -254,11 +293,17 @@ jobs:
             -C modules-files
 
           echo
-          echo "=== Kernel files ==="
-          find kernel-files -type f -print
+          echo "=========================================="
+          echo " Kernel files"
+          echo "=========================================="
+
+          find kernel-files -type f -print | sort
 
           echo
-          echo "=== S905X4 DTB ==="
+          echo "=========================================="
+          echo " S905X4 DTB"
+          echo "=========================================="
+
           find dtb-files \
             -type f \
             \( \
@@ -269,11 +314,19 @@ jobs:
             -print
 
           echo
-          echo "=== Modules ==="
-          find modules-files -type f | head -100
+          echo "=========================================="
+          echo " Modules sample"
+          echo "=========================================="
+
+          # IMPORTANT:
+          # sed is used instead of head.
+          # head caused SIGPIPE + pipefail.
+          find modules-files \
+            -type f \
+            -print | sort | sed -n '1,100p'
 
       # ============================================================
-      # FIND SELECTED DTB
+      # SELECT DTB
       # ============================================================
 
       - name: Select S905X4 DTB
@@ -281,23 +334,39 @@ jobs:
         run: |
           set -euo pipefail
 
-          DTB="$(find dtb-files \
-            -type f \
-            -name "${{ inputs.dtb }}" \
-            | head -n 1)"
+          DTB="$(
+            find dtb-files \
+              -type f \
+              -name "${{ inputs.dtb }}" \
+              -print \
+              -quit
+          )"
 
           if [ -z "$DTB" ]; then
-            echo "::error::Selected DTB not found"
+            echo "::error::Selected DTB not found:"
+            echo "${{ inputs.dtb }}"
+
+            echo
+            echo "Available DTBs:"
+
+            find dtb-files \
+              -type f \
+              -name "*.dtb" \
+              -print \
+              | sort \
+              | sed -n '1,200p'
+
             exit 1
           fi
 
           echo "DTB_PATH=$DTB" >> "$GITHUB_ENV"
 
+          echo
           echo "Selected DTB:"
           echo "$DTB"
 
       # ============================================================
-      # FIND PARTITIONS
+      # DETECT PARTITIONS
       # ============================================================
 
       - name: Detect image partitions
@@ -307,14 +376,26 @@ jobs:
 
           LOOPDEV="$LOOPDEV"
 
-          echo "Using:"
-          echo "$LOOPDEV"
-
           BOOT_PART=""
           ROOT_PART=""
 
+          echo "=========================================="
+          echo " Detecting image partitions"
+          echo "=========================================="
+
           echo
-          echo "=== Detecting partitions ==="
+          echo "Loop device:"
+          echo "$LOOPDEV"
+
+          echo
+          echo "All block devices:"
+
+          lsblk \
+            -o NAME,PATH,SIZE,FSTYPE,LABEL,PARTLABEL,PARTTYPE,MOUNTPOINT \
+            "$LOOPDEV" || true
+
+          echo
+          echo "Partition scan:"
 
           for P in "${LOOPDEV}"p*; do
 
@@ -323,12 +404,13 @@ jobs:
             INFO="$(sudo blkid "$P" 2>/dev/null || true)"
 
             echo
-            echo "$P"
+            echo "------------------------------------------"
+            echo "Partition: $P"
             echo "$INFO"
 
-            # ----------------------------------------------------
-            # FAT / VFAT = likely boot partition
-            # ----------------------------------------------------
+            # ------------------------------------------------------
+            # FAT/VFAT = possible boot partition
+            # ------------------------------------------------------
 
             if echo "$INFO" | grep -Eiq \
               'TYPE="(vfat|fat|fat16|fat32)"'
@@ -338,9 +420,9 @@ jobs:
               fi
             fi
 
-            # ----------------------------------------------------
-            # ext4/f2fs = likely rootfs
-            # ----------------------------------------------------
+            # ------------------------------------------------------
+            # ext4/f2fs = possible rootfs
+            # ------------------------------------------------------
 
             if echo "$INFO" | grep -Eiq \
               'TYPE="(ext4|f2fs)"'
@@ -353,18 +435,12 @@ jobs:
           done
 
           echo
-          echo "Detected boot:"
-          echo "$BOOT_PART"
+          echo "=========================================="
+          echo " Detection result"
+          echo "=========================================="
 
-          echo
-          echo "Detected rootfs:"
-          echo "$ROOT_PART"
-
-          echo
-
-          # ------------------------------------------------------
-          # Save results
-          # ------------------------------------------------------
+          echo "BOOT_PART=${BOOT_PART:-NONE}"
+          echo "ROOT_PART=${ROOT_PART:-NONE}"
 
           if [ -n "$BOOT_PART" ]; then
             echo "BOOT_PART=$BOOT_PART" >> "$GITHUB_ENV"
@@ -391,28 +467,36 @@ jobs:
 
           if [ -z "${ROOT_PART:-}" ]; then
 
-            echo "::error::Rootfs partition not detected."
+            echo "::error::Root filesystem partition was not detected."
 
             echo
-            echo "=== FULL PARTITION INFORMATION ==="
+            echo "=========================================="
+            echo " IMAGE DEBUG"
+            echo "=========================================="
 
             sudo fdisk -l source.img || true
-            sudo parted "$LOOPDEV" unit MiB print || true
 
             echo
-            lsblk -o NAME,PATH,SIZE,FSTYPE,LABEL,PARTLABEL,PARTTYPE "$LOOPDEV" || true
+            sudo parted source.img unit MiB print || true
+
+            echo
+            lsblk \
+              -o NAME,PATH,SIZE,FSTYPE,LABEL,PARTLABEL,PARTTYPE,MOUNTPOINT \
+              "$LOOPDEV" || true
 
             exit 1
           fi
 
-          echo "Mounting rootfs:"
+          echo "Mounting root filesystem:"
           echo "$ROOT_PART"
 
           sudo mount "$ROOT_PART" /mnt/rootfs
 
           echo
-          echo "=== ROOTFS ==="
+          echo "Root filesystem mounted."
 
+          echo
+          echo "Root filesystem top-level:"
           sudo ls -lah /mnt/rootfs
 
       # ============================================================
@@ -426,10 +510,6 @@ jobs:
 
           sudo mkdir -p /mnt/boot
 
-          # --------------------------------------------------------
-          # Separate boot partition
-          # --------------------------------------------------------
-
           if [ -n "${BOOT_PART:-}" ]; then
 
             echo "Separate boot partition detected:"
@@ -437,13 +517,9 @@ jobs:
 
             sudo mount "$BOOT_PART" /mnt/boot
 
-          # --------------------------------------------------------
-          # No separate boot partition
-          # --------------------------------------------------------
-
           else
 
-            echo "No separate FAT boot partition."
+            echo "No separate FAT boot partition found."
 
             if [ -d /mnt/rootfs/boot ]; then
 
@@ -456,14 +532,17 @@ jobs:
 
             else
 
-              echo "::error::Boot partition or /boot directory not found."
+              echo "::error::No boot partition and no /boot directory."
 
               echo
-              echo "Rootfs contents:"
+              echo "Root filesystem directories:"
+
               sudo find /mnt/rootfs \
                 -maxdepth 2 \
-                -type f \
-                -print | head -200
+                -type d \
+                -print \
+                | sort \
+                | sed -n '1,200p'
 
               exit 1
             fi
@@ -471,12 +550,16 @@ jobs:
           fi
 
           echo
-          echo "=== BOOT CONTENT ==="
+          echo "=========================================="
+          echo " BOOT CONTENT"
+          echo "=========================================="
 
           sudo find /mnt/boot \
             -maxdepth 3 \
             -type f \
-            -print | sort | head -300
+            -print \
+            | sort \
+            | sed -n '1,300p'
 
       # ============================================================
       # BACKUP ORIGINAL BOOT
@@ -491,9 +574,11 @@ jobs:
 
           sudo rsync \
             -a \
+            --exclude="original-boot" \
             /mnt/boot/ \
-            /mnt/boot/original-boot/ \
-            --exclude="original-boot"
+            /mnt/boot/original-boot/
+
+          echo "Original boot files backed up."
 
       # ============================================================
       # INSTALL CUSTOM KERNEL
@@ -504,22 +589,31 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "=== Searching kernel package ==="
+          echo "=========================================="
+          echo " Installing kernel 6.6.66"
+          echo "=========================================="
+
+          echo
+          echo "Available kernel files:"
 
           find kernel-files \
             -type f \
-            -print
+            -print \
+            | sort
 
           echo
 
-          # --------------------------------------------------------
-          # Find kernel package directory
-          # --------------------------------------------------------
+          # ------------------------------------------------------
+          # Locate archive root.
+          # ------------------------------------------------------
 
-          KROOT="$(find kernel-files \
-            -type d \
-            -name "boot-6.6.66" \
-            | head -n 1 || true)"
+          KROOT="$(
+            find kernel-files \
+              -type d \
+              -name "boot-6.6.66" \
+              -print \
+              -quit
+          )"
 
           if [ -z "$KROOT" ]; then
             KROOT="kernel-files"
@@ -528,20 +622,23 @@ jobs:
           echo "Kernel root:"
           echo "$KROOT"
 
-          # --------------------------------------------------------
-          # Install kernel files
-          # --------------------------------------------------------
+          # ------------------------------------------------------
+          # Install known files.
+          # ------------------------------------------------------
 
-          for FILE in \
-            vmlinuz-6.6.66 \
-            uInitrd-6.6.66 \
-            initrd.img-6.6.66 \
-            config-6.6.66 \
-            System.map-6.6.66
-          do
+          FILES=(
+            "vmlinuz-6.6.66"
+            "uInitrd-6.6.66"
+            "initrd.img-6.6.66"
+            "config-6.6.66"
+            "System.map-6.6.66"
+          )
+
+          for FILE in "${FILES[@]}"; do
 
             if [ -f "$KROOT/$FILE" ]; then
 
+              echo
               echo "Installing:"
               echo "$FILE"
 
@@ -555,12 +652,19 @@ jobs:
           done
 
           echo
-          echo "=== Installed kernel ==="
+          echo "Installed custom kernel files:"
 
-          sudo ls -lh /mnt/boot/*6.6.66* || true
+          sudo find /mnt/boot \
+            -maxdepth 1 \
+            -type f \
+            \( \
+              -name "*6.6.66*" \
+            \) \
+            -print \
+            | sort
 
       # ============================================================
-      # INSTALL S905X4 DTB
+      # INSTALL DTB
       # ============================================================
 
       - name: Install S905X4 DTB
@@ -568,7 +672,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Installing DTB:"
+          echo "=========================================="
+          echo " Installing S905X4 DTB"
+          echo "=========================================="
+
+          echo "DTB:"
           echo "$DTB_PATH"
 
           sudo mkdir -p \
@@ -579,17 +687,19 @@ jobs:
             "$DTB_PATH" \
             "/mnt/boot/dtb/amlogic/${{ inputs.dtb }}"
 
-          # Also put a copy at boot root.
           sudo cp \
             -f \
             "$DTB_PATH" \
             "/mnt/boot/${{ inputs.dtb }}"
 
           echo
-          echo "=== DTB installed ==="
+          echo "DTB installed."
 
           ls -lh \
             "/mnt/boot/dtb/amlogic/${{ inputs.dtb }}"
+
+          ls -lh \
+            "/mnt/boot/${{ inputs.dtb }}"
 
       # ============================================================
       # INSTALL MODULES
@@ -600,28 +710,25 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "=== Module archive ==="
+          echo "=========================================="
+          echo " Installing modules 6.6.66"
+          echo "=========================================="
 
-          find modules-files \
-            -maxdepth 3 \
-            -type d \
-            -print
+          MODULE_ROOT="modules-files/6.6.66"
 
-          # --------------------------------------------------------
-          # Expected structure:
-          #
-          # modules-files/
-          # └── 6.6.66/
-          #     └── kernel/
-          # --------------------------------------------------------
+          if [ ! -d "$MODULE_ROOT" ]; then
 
-          if [ ! -d "modules-files/6.6.66" ]; then
+            echo "::error::Module directory not found:"
+            echo "$MODULE_ROOT"
 
-            echo "::error::6.6.66 module directory not found."
+            echo
+            echo "Available module files:"
 
             find modules-files \
               -maxdepth 4 \
-              -print
+              -print \
+              | sort \
+              | sed -n '1,300p'
 
             exit 1
           fi
@@ -631,18 +738,33 @@ jobs:
 
           sudo rsync \
             -a \
-            "modules-files/6.6.66/" \
+            "$MODULE_ROOT/" \
             "/mnt/rootfs/lib/modules/6.6.66/"
 
           echo
-          echo "=== Installed modules ==="
+          echo "Modules installed."
 
-          sudo find \
-            /mnt/rootfs/lib/modules/6.6.66 \
-            -type f | head -100
+          echo
+          echo "Module count:"
+
+          find "/mnt/rootfs/lib/modules/6.6.66" \
+            -type f \
+            -name "*.ko*" \
+            -print \
+            | wc -l
+
+          echo
+          echo "Module sample:"
+
+          find "/mnt/rootfs/lib/modules/6.6.66" \
+            -type f \
+            -name "*.ko*" \
+            -print \
+            | sort \
+            | sed -n '1,100p'
 
       # ============================================================
-      # DEPmod
+      # GENERATE MODULE DEPENDENCIES
       # ============================================================
 
       - name: Generate module dependency
@@ -650,7 +772,13 @@ jobs:
         run: |
           set -euo pipefail
 
+          echo "=========================================="
+          echo " Generating module dependencies"
+          echo "=========================================="
+
           if [ -x /mnt/rootfs/sbin/depmod ]; then
+
+            echo "Using target depmod."
 
             sudo chroot \
               /mnt/rootfs \
@@ -660,17 +788,28 @@ jobs:
 
           else
 
-            echo "OpenWrt depmod not found."
+            echo "Target depmod not found."
 
-            # Generate basic metadata using host depmod.
+            echo "Using host depmod."
+
             sudo depmod \
               -b /mnt/rootfs \
               6.6.66 || true
 
           fi
 
+          echo
+          echo "Module metadata:"
+
+          sudo find \
+            /mnt/rootfs/lib/modules/6.6.66 \
+            -maxdepth 1 \
+            -type f \
+            -print \
+            | sort
+
       # ============================================================
-      # SHOW BOOT CONFIGURATION
+      # INSPECT BOOT CONFIG
       # ============================================================
 
       - name: Inspect boot configuration
@@ -678,72 +817,85 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "=== Boot directory ==="
+          echo "=========================================="
+          echo " BOOT CONFIGURATION"
+          echo "=========================================="
+
+          echo
+          echo "--- Boot files ---"
 
           sudo find /mnt/boot \
             -maxdepth 3 \
             -type f \
-            -print | sort
+            -print \
+            | sort \
+            | sed -n '1,400p'
 
           echo
-          echo "=== extlinux ==="
+          echo "--- extlinux ---"
 
           if [ -d /mnt/boot/extlinux ]; then
 
             sudo find /mnt/boot/extlinux \
-              -type f \
               -maxdepth 2 \
+              -type f \
               -print \
-              -exec sh -c \
-              'echo "----- $1"; sed -n "1,240p" "$1"' \
-              _ {} \;
+              | sort \
+              | while IFS= read -r FILE; do
+
+                echo
+                echo "----- $FILE -----"
+
+                sudo sed \
+                  -n '1,240p' \
+                  "$FILE"
+
+              done
 
           fi
 
           echo
-          echo "=== uEnv ==="
+          echo "--- uEnv.txt ---"
 
-          for FILE in \
-            /mnt/boot/uEnv.txt \
-            /mnt/boot/boot.cmd
-          do
+          if [ -f /mnt/boot/uEnv.txt ]; then
 
-            if [ -f "$FILE" ]; then
+            sudo sed \
+              -n '1,240p' \
+              /mnt/boot/uEnv.txt
 
-              echo "----- $FILE"
+          fi
 
-              sudo sed \
-                -n \
-                '1,240p' \
-                "$FILE"
+          echo
+          echo "--- boot.cmd ---"
 
-            fi
+          if [ -f /mnt/boot/boot.cmd ]; then
 
-          done
+            sudo sed \
+              -n '1,240p' \
+              /mnt/boot/boot.cmd
+
+          fi
 
       # ============================================================
-      # DO NOT OVERWRITE ORIGINAL BOOT SCRIPT
+      # PRESERVE ORIGINAL BOOT LOGIC
       # ============================================================
 
-      - name: Prepare S905X4 boot files
+      - name: Preserve original boot configuration
         shell: bash
         run: |
           set -euo pipefail
 
-          # --------------------------------------------------------
-          # IMPORTANT:
-          #
-          # We do NOT replace boot.scr/uEnv.txt automatically.
-          # The original boot mechanism of the source image is kept.
-          #
-          # Kernel/DTB/initrd are installed alongside the original
-          # boot files.
-          # --------------------------------------------------------
-
-          echo "Original boot mechanism preserved."
+          echo "=========================================="
+          echo " Preserving original boot mechanism"
+          echo "=========================================="
 
           echo
-          echo "Available custom files:"
+          echo "boot.scr / uEnv / extlinux are NOT replaced."
+
+          echo "Custom kernel and DTB have been copied into boot."
+
+          echo
+          echo "Custom files:"
 
           sudo find /mnt/boot \
             -maxdepth 3 \
@@ -753,7 +905,8 @@ jobs:
               -o \
               -name "${{ inputs.dtb }}" \
             \) \
-            -print
+            -print \
+            | sort
 
       # ============================================================
       # SYNC
@@ -776,16 +929,18 @@ jobs:
         run: |
           set +e
 
+          echo "Unmounting..."
+
           sudo sync
 
-          # /boot may be a bind mount or real partition.
           sudo umount /mnt/boot 2>/dev/null || true
-
           sudo umount /mnt/rootfs 2>/dev/null || true
 
           if [ -n "${LOOPDEV:-}" ]; then
             sudo losetup -d "$LOOPDEV" 2>/dev/null || true
           fi
+
+          echo "Unmount completed."
 
       # ============================================================
       # VERIFY IMAGE
@@ -796,16 +951,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          test -f source.img
+          if [ ! -f source.img ]; then
+            echo "::error::source.img does not exist."
+            exit 1
+          fi
 
-          echo "=== Final image ==="
+          echo "=========================================="
+          echo " FINAL IMAGE"
+          echo "=========================================="
 
           ls -lh source.img
 
+          echo
           file source.img
 
           echo
-          echo "=== Final partition table ==="
+          echo "--- Partition table ---"
 
           sudo fdisk -l source.img || true
 
@@ -820,6 +981,9 @@ jobs:
 
           OUTPUT="OpenWrt-S905X4-6.6.66-${{ inputs.dtb }}.img.gz"
 
+          echo "Creating:"
+          echo "$OUTPUT"
+
           gzip \
             -1 \
             -c \
@@ -829,7 +993,9 @@ jobs:
           sha256sum "$OUTPUT" > SHA256SUMS
 
           echo
-          echo "=== OUTPUT ==="
+          echo "=========================================="
+          echo " BUILD RESULT"
+          echo "=========================================="
 
           ls -lh "$OUTPUT"
 
