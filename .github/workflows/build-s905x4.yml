@@ -1,814 +1,506 @@
-name: ST4 - OpenWrt S905X4 Custom Kernel 6.6.66
+name: Build OpenWrt S905X4 - Custom Kernel 6.6.66
 
 on:
   workflow_dispatch:
     inputs:
-
       img_url:
-        description: "URL firmware sumber (.img, .img.gz, .img.xz)"
+        description: 'URL firmware/source .img, .img.gz atau .img.xz'
         required: true
         type: string
 
       dtb:
-        description: "DTB S905X4"
+        description: 'DTB S905X4 yang akan dipakai'
         required: true
-        default: "meson-sc2-s905x4-gbit.dtb"
-        type: string
+        type: choice
+        default: meson-sc2-s905x4-gbit.dtb
+        options:
+          - meson-sc2-s905x4-gbit.dtb
+          - meson-sc2-s905x4-ah212.dtb
 
       builder_name:
-        description: "Nama builder"
+        description: 'Nama builder'
         required: false
-        default: "ST4NGKUDUT-S905X4"
+        default: ST4NGKUDUT
         type: string
 
 env:
   TZ: Asia/Jakarta
-  KERNEL_VERSION: "6.6.66"
-  KERNEL_DIR: "custom-kernel/6.6.66"
+  KERNEL_VERSION: 6.6.66
+  KERNEL_DIR: custom-kernel/6.6.66
 
 jobs:
 
-  # ============================================================
-  # PREPARE
-  # ============================================================
-
-  prepare:
-    name: Prepare S905X4 firmware
+  build-s905x4:
+    name: S905X4 / 6.6.66 / ${{ inputs.dtb }}
     runs-on: ubuntu-22.04
 
     steps:
 
-      # ----------------------------------------------------------
-      # CHECKOUT
-      # ----------------------------------------------------------
-
-      - name: 1. Checkout repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ----------------------------------------------------------
-      # CHECK CUSTOM KERNEL
-      # ----------------------------------------------------------
-
-      - name: 2. Check custom kernel archives
+      - name: Verify custom kernel archives
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "=========================================="
-          echo " CUSTOM KERNEL 6.6.66"
-          echo "=========================================="
+          for f in \
+            boot-6.6.66.tar.gz \
+            dtb-amlogic-6.6.66.tar.gz \
+            modules-6.6.66.tar.gz; do
 
-          REQUIRED_FILES=(
-            "${KERNEL_DIR}/boot-6.6.66.tar.gz"
-            "${KERNEL_DIR}/dtb-amlogic-6.6.66.tar.gz"
-            "${KERNEL_DIR}/modules-6.6.66.tar.gz"
-          )
-
-          for FILE in "${REQUIRED_FILES[@]}"; do
-            if [ ! -f "$FILE" ]; then
-              echo "::error::File tidak ditemukan: $FILE"
+            test -f "$KERNEL_DIR/$f" || {
+              echo "Missing $KERNEL_DIR/$f"
               exit 1
-            fi
+            }
 
-            echo
-            echo "OK:"
-            ls -lh "$FILE"
+            ls -lh "$KERNEL_DIR/$f"
+
           done
 
-      # ----------------------------------------------------------
-      # DEPENDENCIES
-      # ----------------------------------------------------------
-
-      - name: 3. Install dependencies
-        shell: bash
+      - name: Install dependencies
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          set -euo pipefail
-
           sudo apt-get update
 
-          sudo apt-get install -y --no-install-recommends \
+          sudo apt-get install -y \
+            curl file gzip xz-utils tar p7zip-full \
+            util-linux e2fsprogs dosfstools parted rsync \
+            u-boot-tools
+
+      - name: Download source image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          url='${{ inputs.img_url }}'
+
+          if [[ "$url" == *drive.google.com* ]]; then
+            python3 -m pip install --user gdown
+
+            ~/.local/bin/gdown \
+              "$url" \
+              -O source.download
+
+          else
+
             curl \
-            wget \
-            file \
-            gzip \
-            xz-utils \
-            tar \
-            rsync \
-            util-linux \
-            kmod \
-            e2fsprogs \
-            dosfstools \
-            u-boot-tools \
-            device-tree-compiler \
-            p7zip-full \
-            pigz
+              -L \
+              --fail \
+              --retry 5 \
+              --retry-delay 3 \
+              "$url" \
+              -o source.download
 
-          sudo timedatectl set-timezone "$TZ"
+          fi
 
-      # ----------------------------------------------------------
-      # DOWNLOAD SOURCE IMAGE
-      # ----------------------------------------------------------
+          file source.download
+          ls -lh source.download
 
-      - name: 4. Download source firmware
-        shell: bash
-        env:
-          IMG_URL: ${{ inputs.img_url }}
-        run: |
-          set -euo pipefail
-
-          echo "=========================================="
-          echo " DOWNLOAD SOURCE IMAGE"
-          echo "=========================================="
-
-          echo "$IMG_URL"
-
-          curl \
-            -fL \
-            --retry 5 \
-            --retry-delay 5 \
-            --connect-timeout 30 \
-            "$IMG_URL" \
-            -o source_file.download
-
-          echo
-          echo "Download selesai:"
-          ls -lh source_file.download
-
-          echo
-          echo "File type:"
-          file source_file.download
-
-      # ----------------------------------------------------------
-      # DECOMPRESS
-      # ----------------------------------------------------------
-
-      - name: 5. Detect and decompress source image
+      - name: Decompress source image
         shell: bash
         run: |
           set -euo pipefail
 
-          FILE_TYPE="$(file -b source_file.download)"
+          type=$(file -b source.download)
 
-          echo "Detected:"
-          echo "$FILE_TYPE"
+          case "$type" in
 
-          case "$FILE_TYPE" in
-
-            *"gzip compressed data"*)
-
-              echo "GZIP terdeteksi."
+            *'gzip compressed data'*)
 
               mv \
-                source_file.download \
-                source_file.img.gz
+                source.download \
+                source.img.gz
 
               gunzip \
-                source_file.img.gz
+                source.img.gz
 
               ;;
 
-            *"XZ compressed data"*)
-
-              echo "XZ terdeteksi."
+            *'XZ compressed data'*)
 
               mv \
-                source_file.download \
-                source_file.img.xz
+                source.download \
+                source.img.xz
 
               unxz \
-                source_file.img.xz
-
-              ;;
-
-            *"boot sector"*|*"disk image"*|*"DOS/MBR"*|*"GPT"*)
-
-              echo "IMG mentah terdeteksi."
-
-              mv \
-                source_file.download \
-                source_file.img
+                source.img.xz
 
               ;;
 
             *)
 
-              echo "::error::Format source image tidak dikenal."
-              echo "$FILE_TYPE"
-
-              exit 1
+              mv \
+                source.download \
+                source.img
 
               ;;
 
           esac
 
-          if [ ! -f source_file.img ]; then
-            echo "::error::source_file.img tidak ditemukan."
-            exit 1
-          fi
+          test -f source.img
 
-          echo
-          echo "Source image:"
-          ls -lh source_file.img
+          file source.img
 
-          echo
-          file source_file.img
+          ls -lh source.img
 
-      # ----------------------------------------------------------
-      # LOOP DEVICE
-      #
-      # INI MENIRU WORKFLOW LAMA.
-      # TIDAK MENGGUNAKAN parted SEBAGAI SYARAT.
-      # ----------------------------------------------------------
-
-      - name: 6. Attach source image exactly like old workflow
+      - name: Extract custom kernel
         shell: bash
         run: |
           set -euo pipefail
-
-          echo "=========================================="
-          echo " ATTACH IMAGE"
-          echo "=========================================="
-
-          LOOPDEV="$(
-            sudo losetup \
-              -fP \
-              --show \
-              source_file.img
-          )"
-
-          echo "LOOPDEV=$LOOPDEV"
-
-          echo "LOOPDEV=$LOOPDEV" >> "$GITHUB_ENV"
-
-          sleep 2
-
-          echo
-          echo "Loop devices:"
-
-          ls -l \
-            "${LOOPDEV}"* \
-            2>/dev/null || true
-
-          echo
-          echo "lsblk:"
-
-          lsblk \
-            -o NAME,PATH,SIZE,FSTYPE,LABEL,PARTLABEL,PARTTYPE,MOUNTPOINT \
-            "$LOOPDEV" \
-            || true
-
-          echo
-          echo "Partitions generated by losetup:"
-
-          for P in "${LOOPDEV}"p*; do
-            if [ -b "$P" ]; then
-              echo "$P"
-            fi
-          done
-
-      # ----------------------------------------------------------
-      # EXTRACT ROOTFS
-      #
-      # EXACT OLD METHOD:
-      # ${LOOPDEV}p2
-      # ----------------------------------------------------------
-
-      - name: 7. Extract RootFS from partition p2
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "=========================================="
-          echo " EXTRACT ROOTFS FROM P2"
-          echo "=========================================="
-
-          mkdir -p \
-            rootfs_mount \
-            extracted-rootfs
-
-          ROOT_PART="${LOOPDEV}p2"
-
-          echo "Expected rootfs:"
-          echo "$ROOT_PART"
-
-          if [ ! -b "$ROOT_PART" ]; then
-
-            echo
-            echo "::error::Partition p2 tidak dibuat oleh losetup."
-
-            echo
-            echo "=========================================="
-            echo " IMAGE DEBUG"
-            echo "=========================================="
-
-            echo
-            echo "--- file ---"
-            file source_file.img
-
-            echo
-            echo "--- size ---"
-            ls -lh source_file.img
-
-            echo
-            echo "--- loop ---"
-            sudo losetup -l "$LOOPDEV" || true
-
-            echo
-            echo "--- lsblk ---"
-            lsblk \
-              -a \
-              -o NAME,PATH,SIZE,FSTYPE,LABEL,PARTLABEL,PARTTYPE,MOUNTPOINT \
-              "$LOOPDEV" \
-              || true
-
-            echo
-            echo "--- fdisk ---"
-            sudo fdisk -l "$LOOPDEV" || true
-
-            echo
-            echo "--- blkid ---"
-            sudo blkid "$LOOPDEV" || true
-
-            echo
-            echo "--- signatures ---"
-
-            sudo blkid -p "$LOOPDEV" || true
-
-            echo
-            echo "--- first 4 KiB ---"
-
-            sudo dd \
-              if=source_file.img \
-              bs=4096 \
-              count=1 \
-              2>/dev/null \
-              | xxd
-
-            exit 1
-          fi
-
-          echo
-          echo "RootFS partition ditemukan:"
-          ls -lh "$ROOT_PART"
-
-          # ------------------------------------------------------
-          # MOUNT ROOTFS
-          # ------------------------------------------------------
-
-          sudo mount \
-            "$ROOT_PART" \
-            rootfs_mount
-
-          echo
-          echo "RootFS berhasil di-mount."
-
-          echo
-          echo "RootFS:"
-          sudo ls -lah rootfs_mount
-
-          # ------------------------------------------------------
-          # CREATE ROOTFS TAR
-          #
-          # Tidak menggunakan find | head.
-          # ------------------------------------------------------
-
-          echo
-          echo "Membuat archive rootfs..."
-
-          sudo tar \
-            -C rootfs_mount \
-            -czf \
-            extracted-rootfs/openwrt-rootfs.tar.gz \
-            .
-
-          sudo chown \
-            "$(id -u):$(id -g)" \
-            extracted-rootfs/openwrt-rootfs.tar.gz
-
-          echo
-          ls -lh \
-            extracted-rootfs/openwrt-rootfs.tar.gz
-
-      # ----------------------------------------------------------
-      # UPLOAD ROOTFS
-      # ----------------------------------------------------------
-
-      - name: 8. Upload RootFS artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: s905x4-rootfs
-          retention-days: 1
-          path: extracted-rootfs/openwrt-rootfs.tar.gz
-
-      # ----------------------------------------------------------
-      # EXTRACT CUSTOM KERNEL
-      # ----------------------------------------------------------
-
-      - name: 9. Extract custom kernel 6.6.66
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "=========================================="
-          echo " EXTRACT CUSTOM KERNEL"
-          echo "=========================================="
 
           rm -rf \
             kernel-files \
             dtb-files \
             modules-files
 
-          mkdir -p \
+          mkdir \
             kernel-files \
             dtb-files \
             modules-files
 
           tar \
             -xzf \
-            "${KERNEL_DIR}/boot-6.6.66.tar.gz" \
+            "$KERNEL_DIR/boot-6.6.66.tar.gz" \
             -C kernel-files
 
           tar \
             -xzf \
-            "${KERNEL_DIR}/dtb-amlogic-6.6.66.tar.gz" \
+            "$KERNEL_DIR/dtb-amlogic-6.6.66.tar.gz" \
             -C dtb-files
 
           tar \
             -xzf \
-            "${KERNEL_DIR}/modules-6.6.66.tar.gz" \
+            "$KERNEL_DIR/modules-6.6.66.tar.gz" \
             -C modules-files
 
-          echo
-          echo "=== KERNEL ==="
+          echo '=== boot archive ==='
 
           find \
             kernel-files \
+            -maxdepth 4 \
             -type f \
-            -print \
-            | sort
+            -print
 
-          echo
-          echo "=== DTB ==="
+          echo '=== selected DTBs ==='
 
           find \
             dtb-files \
             -type f \
-            -name "*.dtb" \
-            -print \
-            | sort
+            -name '*.dtb' \
+            -print
 
-          echo
-          echo "=== MODULES ==="
+          echo '=== modules ==='
 
           find \
             modules-files \
-            -type f \
-            -name "*.ko*" \
+            -maxdepth 3 \
+            -type d \
             -print \
-            | sort \
-            | sed -n '1,100p'
+            | head -50
 
-      # ----------------------------------------------------------
-      # VERIFY CUSTOM KERNEL
-      # ----------------------------------------------------------
-
-      - name: 10. Verify custom kernel
+      - name: Locate selected DTB
         shell: bash
         run: |
           set -euo pipefail
 
-          VMLINUZ="$(
+          DTB_PATH=$(
+            find \
+              dtb-files \
+              -type f \
+              -name '${{ inputs.dtb }}' \
+              | head -n 1
+          )
+
+          test -n "$DTB_PATH" || {
+            echo 'Selected DTB not found'
+            exit 1
+          }
+
+          echo "DTB_PATH=$DTB_PATH" >> "$GITHUB_ENV"
+
+          echo "Using: $DTB_PATH"
+
+      - name: Attach image and inspect partitions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LOOPDEV=$(
+            sudo losetup \
+              -Pf \
+              --show \
+              source.img
+          )
+
+          echo "LOOPDEV=$LOOPDEV" >> "$GITHUB_ENV"
+
+          sudo fdisk \
+            -l \
+            "$LOOPDEV" \
+            || true
+
+          lsblk \
+            -f \
+            "$LOOPDEV" \
+            || true
+
+      - name: Mount OpenWrt boot and rootfs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo mkdir \
+            -p \
+            /mnt/openwrt-boot \
+            /mnt/openwrt-rootfs
+
+          # Layout source image:
+          # p1 = boot
+          # p2 = rootfs
+
+          test -b "${LOOPDEV}p1" || {
+            echo 'boot partition p1 not found'
+            exit 1
+          }
+
+          test -b "${LOOPDEV}p2" || {
+            echo 'rootfs partition p2 not found'
+            exit 1
+          }
+
+          sudo mount \
+            "${LOOPDEV}p1" \
+            /mnt/openwrt-boot
+
+          sudo mount \
+            "${LOOPDEV}p2" \
+            /mnt/openwrt-rootfs
+
+          echo '=== boot partition ==='
+
+          sudo find \
+            /mnt/openwrt-boot \
+            -maxdepth 3 \
+            -type f \
+            -print \
+            | sort
+
+          echo '=== rootfs ==='
+
+          sudo ls \
+            -lah \
+            /mnt/openwrt-rootfs
+
+      - name: Install custom kernel 6.6.66
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KROOT=$(
             find \
               kernel-files \
-              -type f \
-              -name "vmlinuz-6.6.66" \
-              -print \
-              -quit
-          )"
+              -maxdepth 2 \
+              -type d \
+              -name 'boot-6.6.66' \
+              | head -n 1 \
+              || true
+          )
 
-          if [ -z "$VMLINUZ" ]; then
-            echo "::error::vmlinuz-6.6.66 tidak ditemukan."
-            exit 1
-          fi
+          [ -n "$KROOT" ] || KROOT=kernel-files
 
-          DTB="$(
-            find \
-              dtb-files \
-              -type f \
-              -name "${{ inputs.dtb }}" \
-              -print \
-              -quit
-          )"
+          echo "Kernel package: $KROOT"
 
-          if [ -z "$DTB" ]; then
-            echo "::error::DTB tidak ditemukan:"
-            echo "${{ inputs.dtb }}"
+          find \
+            "$KROOT" \
+            -maxdepth 2 \
+            -type f \
+            -print
 
-            echo
-            echo "DTB tersedia:"
+          for f in \
+            vmlinuz-6.6.66 \
+            uInitrd-6.6.66 \
+            initrd.img-6.6.66 \
+            config-6.6.66 \
+            System.map-6.6.66; do
 
-            find \
-              dtb-files \
-              -type f \
-              -name "*.dtb" \
-              -print \
-              | sort
+            if [ -f "$KROOT/$f" ]; then
 
-            exit 1
-          fi
+              sudo cp \
+                -f \
+                "$KROOT/$f" \
+                "/mnt/openwrt-boot/$f"
 
-          if [ ! -d "modules-files/6.6.66" ]; then
-            echo "::error::modules-files/6.6.66 tidak ditemukan."
-            exit 1
-          fi
+            fi
 
-          MODULE_COUNT="$(
-            find \
-              modules-files/6.6.66 \
-              -type f \
-              -name "*.ko*" \
-              -print \
-              | wc -l
-          )"
+          done
 
-          if [ "$MODULE_COUNT" -eq 0 ]; then
-            echo "::error::Tidak ada module kernel."
-            exit 1
-          fi
+          sudo mkdir \
+            -p \
+            /mnt/openwrt-boot/dtb/amlogic
 
-          echo
-          echo "Kernel:"
-          ls -lh "$VMLINUZ"
+          sudo cp \
+            -f \
+            "$DTB_PATH" \
+            "/mnt/openwrt-boot/dtb/amlogic/${{ inputs.dtb }}"
 
-          echo
-          echo "DTB:"
-          ls -lh "$DTB"
+          sudo cp \
+            -f \
+            "$DTB_PATH" \
+            "/mnt/openwrt-boot/${{ inputs.dtb }}"
 
-          echo
-          echo "Modules:"
-          echo "$MODULE_COUNT"
-
-      # ----------------------------------------------------------
-      # INSTALL CUSTOM KERNEL
-      #
-      # ROOTFS MASIH MOUNTED.
-      # BOOT BELUM DIMODIFIKASI DI SINI.
-      # ----------------------------------------------------------
-
-      - name: 11. Install modules into OpenWrt rootfs
+      - name: Install modules 6.6.66
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "=========================================="
-          echo " INSTALL MODULES 6.6.66"
-          echo "=========================================="
+          test -d modules-files/6.6.66 || {
 
-          sudo mkdir -p \
-            rootfs_mount/lib/modules/6.6.66
+            echo 'modules-files/6.6.66 not found'
+
+            find \
+              modules-files \
+              -maxdepth 3 \
+              -print
+
+            exit 1
+
+          }
+
+          sudo mkdir \
+            -p \
+            /mnt/openwrt-rootfs/lib/modules/6.6.66
 
           sudo rsync \
             -a \
             modules-files/6.6.66/ \
-            rootfs_mount/lib/modules/6.6.66/
+            /mnt/openwrt-rootfs/lib/modules/6.6.66/
 
-          echo
-          echo "Module count installed:"
-
-          find \
-            rootfs_mount/lib/modules/6.6.66 \
-            -type f \
-            -name "*.ko*" \
-            -print \
-            | wc -l
-
-      # ----------------------------------------------------------
-      # INSTALL KERNEL INTO ROOTFS /BOOT
-      # ----------------------------------------------------------
-
-      - name: 12. Install kernel 6.6.66 into rootfs boot
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "=========================================="
-          echo " INSTALL KERNEL 6.6.66"
-          echo "=========================================="
-
-          sudo mkdir -p \
-            rootfs_mount/boot
-
-          VMLINUZ="$(
-            find \
-              kernel-files \
-              -type f \
-              -name "vmlinuz-6.6.66" \
-              -print \
-              -quit
-          )"
-
-          sudo cp \
-            -f \
-            "$VMLINUZ" \
-            rootfs_mount/boot/vmlinuz-6.6.66
-
-          SYSTEM_MAP="$(
-            find \
-              kernel-files \
-              -type f \
-              -name "System.map-6.6.66" \
-              -print \
-              -quit
-          )"
-
-          if [ -n "$SYSTEM_MAP" ]; then
-            sudo cp \
-              -f \
-              "$SYSTEM_MAP" \
-              rootfs_mount/boot/System.map-6.6.66
-          fi
-
-          CONFIG_FILE="$(
-            find \
-              kernel-files \
-              -type f \
-              -name "config-6.6.66" \
-              -print \
-              -quit
-          )"
-
-          if [ -n "$CONFIG_FILE" ]; then
-            sudo cp \
-              -f \
-              "$CONFIG_FILE" \
-              rootfs_mount/boot/config-6.6.66
-          fi
-
-          echo
-          echo "Installed:"
-          sudo ls -lh \
-            rootfs_mount/boot/*6.6.66* \
-            2>/dev/null || true
-
-      # ----------------------------------------------------------
-      # GENERATE DEPMOD
-      # ----------------------------------------------------------
-
-      - name: 13. Generate module dependency
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "Generating depmod..."
-
-          if [ -x rootfs_mount/sbin/depmod ]; then
+          if [ -x /mnt/openwrt-rootfs/sbin/depmod ]; then
 
             sudo chroot \
-              rootfs_mount \
+              /mnt/openwrt-rootfs \
               /sbin/depmod \
               -a \
               6.6.66 \
               || true
 
-          else
+          elif command -v depmod >/dev/null 2>&1; then
 
             sudo depmod \
-              -b rootfs_mount \
+              -b \
+              /mnt/openwrt-rootfs \
               6.6.66 \
               || true
 
           fi
 
-          echo
-          echo "Module metadata:"
+      - name: Show boot files and boot configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo '=== final boot files ==='
 
           sudo find \
-            rootfs_mount/lib/modules/6.6.66 \
-            -maxdepth 1 \
+            /mnt/openwrt-boot \
+            -maxdepth 3 \
             -type f \
-            -print \
+            -printf '%p %k KB\n' \
             | sort
 
-      # ----------------------------------------------------------
-      # CHECK AP633I / BROADCOM
-      # ----------------------------------------------------------
+          echo '=== extlinux/uEnv/boot scripts ==='
 
-      - name: 14. Check AP633i Broadcom WiFi support
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "=========================================="
-          echo " AP633i / BRCMFMAC"
-          echo "=========================================="
-
-          echo
-          echo "brcmfmac modules:"
-
-          find \
-            rootfs_mount/lib/modules/6.6.66 \
-            -type f \
+          sudo find \
+            /mnt/openwrt-boot \
+            -maxdepth 3 \
             \( \
-              -name "brcmfmac*.ko" \
+              -name 'extlinux.conf' \
               -o \
-              -name "brcmutil*.ko" \
+              -name 'uEnv.txt' \
+              -o \
+              -name 'boot.scr' \
+              -o \
+              -name 'boot.cmd' \
             \) \
-            -print \
-            | sort
+            -print
 
-          echo
-          echo "Broadcom firmware:"
+          echo '=== kernel size ==='
 
-          find \
-            rootfs_mount \
-            -type f \
-            \( \
-              -name "brcmfmac*.bin" \
-              -o \
-              -name "brcmfmac*.txt" \
-              -o \
-              -name "brcmfmac*.clm_blob" \
-            \) \
-            -print \
-            | sort \
-            | sed -n '1,200p'
+          sudo ls \
+            -lh \
+            /mnt/openwrt-boot/vmlinuz-6.6.66 \
+            /mnt/openwrt-boot/uInitrd-6.6.66 \
+            2>/dev/null \
+            || true
 
-      # ----------------------------------------------------------
-      # REPACK ROOTFS
-      # ----------------------------------------------------------
-
-      - name: 15. Repack modified rootfs
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "=========================================="
-          echo " REPACK ROOTFS"
-          echo "=========================================="
-
-          sudo tar \
-            -C rootfs_mount \
-            -czf \
-            openwrt-rootfs-s905x4-6.6.66.tar.gz \
-            .
-
-          sudo chown \
-            "$(id -u):$(id -g)" \
-            openwrt-rootfs-s905x4-6.6.66.tar.gz
-
-          ls -lh \
-            openwrt-rootfs-s905x4-6.6.66.tar.gz
-
-      # ----------------------------------------------------------
-      # UNMOUNT ROOTFS
-      # ----------------------------------------------------------
-
-      - name: 16. Unmount rootfs
+      - name: Flush and unmount
         if: always()
         shell: bash
         run: |
           set +e
 
-          sync
+          sudo sync
 
           sudo umount \
-            rootfs_mount \
+            /mnt/openwrt-boot \
+            2>/dev/null \
+            || true
+
+          sudo umount \
+            /mnt/openwrt-rootfs \
             2>/dev/null \
             || true
 
           if [ -n "${LOOPDEV:-}" ]; then
+
             sudo losetup \
               -d \
               "$LOOPDEV" \
               2>/dev/null \
               || true
+
           fi
 
-      # ----------------------------------------------------------
-      # UPLOAD MODIFIED ROOTFS
-      # ----------------------------------------------------------
-
-      - name: 17. Upload modified rootfs
-        uses: actions/upload-artifact@v4
-        with:
-          name: S905X4-rootfs-custom-6.6.66
-          retention-days: 14
-          path: openwrt-rootfs-s905x4-6.6.66.tar.gz
-
-      # ----------------------------------------------------------
-      # CLEANUP
-      # ----------------------------------------------------------
-
-      - name: 18. Cleanup
-        if: always()
+      - name: Create compressed image
         shell: bash
         run: |
-          set +e
+          set -euo pipefail
 
-          sudo umount rootfs_mount 2>/dev/null || true
+          OUT="OpenWrt-S905X4-6.6.66-${{ inputs.dtb }}.img.gz"
 
-          if [ -n "${LOOPDEV:-}" ]; then
-            sudo losetup -d "$LOOPDEV" 2>/dev/null || true
-          fi
+          gzip \
+            -1 \
+            -c \
+            source.img \
+            > "$OUT"
+
+          sha256sum \
+            "$OUT" \
+            | tee SHA256SUMS
+
+          ls \
+            -lh \
+            "$OUT" \
+            SHA256SUMS
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt-S905X4-6.6.66-${{ inputs.dtb }}
+          path: |
+            OpenWrt-S905X4-6.6.66-${{ inputs.dtb }}.img.gz
+            SHA256SUMS
+
+      - name: Publish GitHub Release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "S905X4-6.6.66-${{ github.run_number }}"
+          name: "OpenWrt S905X4 6.6.66 #${{ github.run_number }}"
+          files: |
+            OpenWrt-S905X4-6.6.66-${{ inputs.dtb }}.img.gz
+            SHA256SUMS
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
