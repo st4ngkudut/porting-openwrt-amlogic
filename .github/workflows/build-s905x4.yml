@@ -4,258 +4,847 @@ on:
   workflow_dispatch:
     inputs:
       img_url:
-        description: 'URL firmware/source .img, .img.gz atau .img.xz'
+        description: "URL firmware OpenWrt image (.img/.img.gz/.img.xz)"
         required: true
         type: string
+
       dtb:
-        description: 'DTB S905X4 yang akan dipakai'
+        description: "DTB S905X4"
         required: true
+        default: "meson-sc2-s905x4-gbit.dtb"
         type: choice
-        default: meson-sc2-s905x4-gbit.dtb
         options:
           - meson-sc2-s905x4-gbit.dtb
           - meson-sc2-s905x4-ah212.dtb
-      builder_name:
-        description: 'Nama builder'
-        required: false
-        default: ST4NGKUDUT
-        type: string
-
-env:
-  TZ: Asia/Jakarta
-  KERNEL_VERSION: 6.6.66
-  KERNEL_DIR: custom-kernel/6.6.66
 
 jobs:
-  build-s905x4:
-    name: S905X4 / 6.6.66 / ${{ inputs.dtb }}
+  build:
+    name: S905X4 / Kernel 6.6.66 / ${{ inputs.dtb }}
     runs-on: ubuntu-22.04
 
+    env:
+      TZ: Asia/Jakarta
+      KERNEL_VERSION: "6.6.66"
+      KERNEL_DIR: "custom-kernel/6.6.66"
+
     steps:
+
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Verify custom kernel archives
+      # ============================================================
+      # CHECK CUSTOM KERNEL
+      # ============================================================
+
+      - name: Check custom kernel files
         shell: bash
         run: |
           set -euo pipefail
-          for f in \
-            boot-6.6.66.tar.gz \
-            dtb-amlogic-6.6.66.tar.gz \
-            modules-6.6.66.tar.gz; do
-            test -f "$KERNEL_DIR/$f" || { echo "Missing $KERNEL_DIR/$f"; exit 1; }
-            ls -lh "$KERNEL_DIR/$f"
+
+          echo "=== Custom kernel files ==="
+
+          required_files=(
+            "${KERNEL_DIR}/boot-6.6.66.tar.gz"
+            "${KERNEL_DIR}/dtb-amlogic-6.6.66.tar.gz"
+            "${KERNEL_DIR}/modules-6.6.66.tar.gz"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "::error::Missing file: $file"
+              exit 1
+            fi
+
+            ls -lh "$file"
           done
+
+      # ============================================================
+      # DEPENDENCIES
+      # ============================================================
 
       - name: Install dependencies
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update
+
           sudo apt-get install -y \
-            curl file gzip xz-utils tar p7zip-full \
-            util-linux e2fsprogs dosfstools parted rsync \
+            curl \
+            wget \
+            file \
+            gzip \
+            xz-utils \
+            tar \
+            rsync \
+            util-linux \
+            mount \
+            kmod \
+            e2fsprogs \
+            dosfstools \
+            parted \
+            gdisk \
             u-boot-tools
 
-      - name: Download source image
+      # ============================================================
+      # DOWNLOAD SOURCE IMAGE
+      # ============================================================
+
+      - name: Download OpenWrt source image
         shell: bash
         run: |
           set -euo pipefail
-          url='${{ inputs.img_url }}'
 
-          if [[ "$url" == *drive.google.com* ]]; then
-            python3 -m pip install --user gdown
-            ~/.local/bin/gdown "$url" -O source.download
-          else
-            curl -L --fail --retry 5 --retry-delay 3 "$url" -o source.download
-          fi
+          URL="${{ inputs.img_url }}"
 
-          file source.download
+          echo "Downloading:"
+          echo "$URL"
+
+          curl \
+            -L \
+            --fail \
+            --retry 5 \
+            --retry-delay 5 \
+            --connect-timeout 30 \
+            "$URL" \
+            -o source.download
+
+          echo
+          echo "=== Downloaded file ==="
+
           ls -lh source.download
+          file source.download
+
+      # ============================================================
+      # DECOMPRESS IMAGE
+      # ============================================================
 
       - name: Decompress source image
         shell: bash
         run: |
           set -euo pipefail
-          type=$(file -b source.download)
 
-          case "$type" in
-            *'gzip compressed data'*)
+          TYPE="$(file -b source.download)"
+
+          echo "Detected:"
+          echo "$TYPE"
+
+          case "$TYPE" in
+
+            *"gzip compressed data"*)
               mv source.download source.img.gz
               gunzip source.img.gz
               ;;
-            *'XZ compressed data'*)
+
+            *"XZ compressed data"*)
               mv source.download source.img.xz
               unxz source.img.xz
               ;;
-            *)
+
+            *"disk image"*)
               mv source.download source.img
+              ;;
+
+            *"DOS/MBR boot sector"*)
+              mv source.download source.img
+              ;;
+
+            *"GPT"*)
+              mv source.download source.img
+              ;;
+
+            *)
+              echo "::error::Unknown image format"
+              echo "$TYPE"
+              exit 1
               ;;
           esac
 
           test -f source.img
-          file source.img
+
+          echo
+          echo "=== Source image ==="
           ls -lh source.img
+          file source.img
+
+      # ============================================================
+      # INSPECT IMAGE BEFORE TOUCHING IT
+      # ============================================================
+
+      - name: Inspect source image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== IMAGE SIZE ==="
+          ls -lh source.img
+
+          echo
+          echo "=== fdisk ==="
+          sudo fdisk -l source.img || true
+
+          echo
+          echo "=== parted ==="
+          sudo parted source.img unit MiB print || true
+
+          echo
+          echo "=== losetup ==="
+
+          LOOPDEV="$(sudo losetup --find --show --partscan source.img)"
+
+          echo "LOOPDEV=$LOOPDEV" >> "$GITHUB_ENV"
+
+          sleep 2
+
+          echo
+          echo "=== lsblk ==="
+          lsblk -o NAME,PATH,SIZE,FSTYPE,LABEL,PARTLABEL,PARTTYPE,MOUNTPOINT "$LOOPDEV" || true
+
+          echo
+          echo "=== blkid ==="
+          sudo blkid "$LOOPDEV" || true
+
+          for P in "${LOOPDEV}"p*; do
+            if [ -b "$P" ]; then
+              echo
+              echo "=== $P ==="
+              sudo blkid "$P" || true
+            fi
+          done
+
+      # ============================================================
+      # EXTRACT CUSTOM KERNEL
+      # ============================================================
 
       - name: Extract custom kernel
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf kernel-files dtb-files modules-files
-          mkdir kernel-files dtb-files modules-files
 
-          tar -xzf "$KERNEL_DIR/boot-6.6.66.tar.gz" -C kernel-files
-          tar -xzf "$KERNEL_DIR/dtb-amlogic-6.6.66.tar.gz" -C dtb-files
-          tar -xzf "$KERNEL_DIR/modules-6.6.66.tar.gz" -C modules-files
+          rm -rf kernel-files
+          rm -rf dtb-files
+          rm -rf modules-files
 
-          echo '=== boot archive ==='
-          find kernel-files -maxdepth 4 -type f -print
-          echo '=== selected DTBs ==='
-          find dtb-files -type f -name '*.dtb' -print
-          echo '=== modules ==='
-          find modules-files -maxdepth 3 -type d -print | head -50
+          mkdir -p kernel-files
+          mkdir -p dtb-files
+          mkdir -p modules-files
 
-      - name: Locate selected DTB
+          echo "=== Extract boot archive ==="
+
+          tar \
+            -xzf \
+            "${KERNEL_DIR}/boot-6.6.66.tar.gz" \
+            -C kernel-files
+
+          echo "=== Extract DTB archive ==="
+
+          tar \
+            -xzf \
+            "${KERNEL_DIR}/dtb-amlogic-6.6.66.tar.gz" \
+            -C dtb-files
+
+          echo "=== Extract modules archive ==="
+
+          tar \
+            -xzf \
+            "${KERNEL_DIR}/modules-6.6.66.tar.gz" \
+            -C modules-files
+
+          echo
+          echo "=== Kernel files ==="
+          find kernel-files -type f -print
+
+          echo
+          echo "=== S905X4 DTB ==="
+          find dtb-files \
+            -type f \
+            \( \
+              -name "meson-sc2-s905x4-gbit.dtb" \
+              -o \
+              -name "meson-sc2-s905x4-ah212.dtb" \
+            \) \
+            -print
+
+          echo
+          echo "=== Modules ==="
+          find modules-files -type f | head -100
+
+      # ============================================================
+      # FIND SELECTED DTB
+      # ============================================================
+
+      - name: Select S905X4 DTB
         shell: bash
         run: |
           set -euo pipefail
-          DTB_PATH=$(find dtb-files -type f -name '${{ inputs.dtb }}' | head -n 1)
-          test -n "$DTB_PATH" || { echo 'Selected DTB not found'; exit 1; }
-          echo "DTB_PATH=$DTB_PATH" >> "$GITHUB_ENV"
-          echo "Using: $DTB_PATH"
 
-      - name: Attach image and inspect partitions
-        shell: bash
-        run: |
-          set -euo pipefail
-          LOOPDEV=$(sudo losetup -Pf --show source.img)
-          echo "LOOPDEV=$LOOPDEV" >> "$GITHUB_ENV"
-          sudo fdisk -l "$LOOPDEV" || true
-          lsblk -f "$LOOPDEV" || true
+          DTB="$(find dtb-files \
+            -type f \
+            -name "${{ inputs.dtb }}" \
+            | head -n 1)"
 
-      - name: Mount OpenWrt boot and rootfs
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo mkdir -p /mnt/openwrt-boot /mnt/openwrt-rootfs
+          if [ -z "$DTB" ]; then
+            echo "::error::Selected DTB not found"
+            exit 1
+          fi
 
-          # This follows the layout used by your original workflow: p1=boot, p2=rootfs.
-          test -b "${LOOPDEV}p1" || { echo 'boot partition p1 not found'; exit 1; }
-          test -b "${LOOPDEV}p2" || { echo 'rootfs partition p2 not found'; exit 1; }
+          echo "DTB_PATH=$DTB" >> "$GITHUB_ENV"
 
-          sudo mount "${LOOPDEV}p1" /mnt/openwrt-boot
-          sudo mount "${LOOPDEV}p2" /mnt/openwrt-rootfs
+          echo "Selected DTB:"
+          echo "$DTB"
 
-          echo '=== boot partition ==='
-          sudo find /mnt/openwrt-boot -maxdepth 3 -type f -print | sort
-          echo '=== rootfs ==='
-          sudo ls -lah /mnt/openwrt-rootfs
+      # ============================================================
+      # FIND PARTITIONS
+      # ============================================================
 
-      - name: Install custom kernel 6.6.66
+      - name: Detect image partitions
         shell: bash
         run: |
           set -euo pipefail
 
-          # Find the directory contained by boot-6.6.66.tar.gz.
-          KROOT=$(find kernel-files -maxdepth 2 -type d -name 'boot-6.6.66' | head -n 1 || true)
-          [ -n "$KROOT" ] || KROOT=kernel-files
+          LOOPDEV="$LOOPDEV"
 
-          echo "Kernel package: $KROOT"
-          find "$KROOT" -maxdepth 2 -type f -print
+          echo "Using:"
+          echo "$LOOPDEV"
 
-          # Do not copy the old boot files into a backup directory: that would
-          # unnecessarily consume the boot partition. The source image itself
-          # remains available as source.img until the final image is produced.
-          for f in vmlinuz-6.6.66 uInitrd-6.6.66 initrd.img-6.6.66 config-6.6.66 System.map-6.6.66; do
-            if [ -f "$KROOT/$f" ]; then
-              sudo cp -f "$KROOT/$f" "/mnt/openwrt-boot/$f"
+          BOOT_PART=""
+          ROOT_PART=""
+
+          echo
+          echo "=== Detecting partitions ==="
+
+          for P in "${LOOPDEV}"p*; do
+
+            [ -b "$P" ] || continue
+
+            INFO="$(sudo blkid "$P" 2>/dev/null || true)"
+
+            echo
+            echo "$P"
+            echo "$INFO"
+
+            # ----------------------------------------------------
+            # FAT / VFAT = likely boot partition
+            # ----------------------------------------------------
+
+            if echo "$INFO" | grep -Eiq \
+              'TYPE="(vfat|fat|fat16|fat32)"'
+            then
+              if [ -z "$BOOT_PART" ]; then
+                BOOT_PART="$P"
+              fi
             fi
+
+            # ----------------------------------------------------
+            # ext4/f2fs = likely rootfs
+            # ----------------------------------------------------
+
+            if echo "$INFO" | grep -Eiq \
+              'TYPE="(ext4|f2fs)"'
+            then
+              if [ -z "$ROOT_PART" ]; then
+                ROOT_PART="$P"
+              fi
+            fi
+
           done
 
-          sudo mkdir -p /mnt/openwrt-boot/dtb/amlogic
-          sudo cp -f "$DTB_PATH" \
-            "/mnt/openwrt-boot/dtb/amlogic/${{ inputs.dtb }}"
+          echo
+          echo "Detected boot:"
+          echo "$BOOT_PART"
 
-          # Flat copy is useful for bootloaders that look for DTB beside the kernel.
-          sudo cp -f "$DTB_PATH" \
-            "/mnt/openwrt-boot/${{ inputs.dtb }}"
+          echo
+          echo "Detected rootfs:"
+          echo "$ROOT_PART"
+
+          echo
+
+          # ------------------------------------------------------
+          # Save results
+          # ------------------------------------------------------
+
+          if [ -n "$BOOT_PART" ]; then
+            echo "BOOT_PART=$BOOT_PART" >> "$GITHUB_ENV"
+          else
+            echo "BOOT_PART=" >> "$GITHUB_ENV"
+          fi
+
+          if [ -n "$ROOT_PART" ]; then
+            echo "ROOT_PART=$ROOT_PART" >> "$GITHUB_ENV"
+          else
+            echo "ROOT_PART=" >> "$GITHUB_ENV"
+          fi
+
+      # ============================================================
+      # MOUNT ROOTFS
+      # ============================================================
+
+      - name: Mount root filesystem
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo mkdir -p /mnt/rootfs
+
+          if [ -z "${ROOT_PART:-}" ]; then
+
+            echo "::error::Rootfs partition not detected."
+
+            echo
+            echo "=== FULL PARTITION INFORMATION ==="
+
+            sudo fdisk -l source.img || true
+            sudo parted "$LOOPDEV" unit MiB print || true
+
+            echo
+            lsblk -o NAME,PATH,SIZE,FSTYPE,LABEL,PARTLABEL,PARTTYPE "$LOOPDEV" || true
+
+            exit 1
+          fi
+
+          echo "Mounting rootfs:"
+          echo "$ROOT_PART"
+
+          sudo mount "$ROOT_PART" /mnt/rootfs
+
+          echo
+          echo "=== ROOTFS ==="
+
+          sudo ls -lah /mnt/rootfs
+
+      # ============================================================
+      # MOUNT BOOT
+      # ============================================================
+
+      - name: Mount boot filesystem
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo mkdir -p /mnt/boot
+
+          # --------------------------------------------------------
+          # Separate boot partition
+          # --------------------------------------------------------
+
+          if [ -n "${BOOT_PART:-}" ]; then
+
+            echo "Separate boot partition detected:"
+            echo "$BOOT_PART"
+
+            sudo mount "$BOOT_PART" /mnt/boot
+
+          # --------------------------------------------------------
+          # No separate boot partition
+          # --------------------------------------------------------
+
+          else
+
+            echo "No separate FAT boot partition."
+
+            if [ -d /mnt/rootfs/boot ]; then
+
+              echo "Using rootfs /boot directory."
+
+              sudo mount \
+                --bind \
+                /mnt/rootfs/boot \
+                /mnt/boot
+
+            else
+
+              echo "::error::Boot partition or /boot directory not found."
+
+              echo
+              echo "Rootfs contents:"
+              sudo find /mnt/rootfs \
+                -maxdepth 2 \
+                -type f \
+                -print | head -200
+
+              exit 1
+            fi
+
+          fi
+
+          echo
+          echo "=== BOOT CONTENT ==="
+
+          sudo find /mnt/boot \
+            -maxdepth 3 \
+            -type f \
+            -print | sort | head -300
+
+      # ============================================================
+      # BACKUP ORIGINAL BOOT
+      # ============================================================
+
+      - name: Backup original boot files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo mkdir -p /mnt/boot/original-boot
+
+          sudo rsync \
+            -a \
+            /mnt/boot/ \
+            /mnt/boot/original-boot/ \
+            --exclude="original-boot"
+
+      # ============================================================
+      # INSTALL CUSTOM KERNEL
+      # ============================================================
+
+      - name: Install kernel 6.6.66
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== Searching kernel package ==="
+
+          find kernel-files \
+            -type f \
+            -print
+
+          echo
+
+          # --------------------------------------------------------
+          # Find kernel package directory
+          # --------------------------------------------------------
+
+          KROOT="$(find kernel-files \
+            -type d \
+            -name "boot-6.6.66" \
+            | head -n 1 || true)"
+
+          if [ -z "$KROOT" ]; then
+            KROOT="kernel-files"
+          fi
+
+          echo "Kernel root:"
+          echo "$KROOT"
+
+          # --------------------------------------------------------
+          # Install kernel files
+          # --------------------------------------------------------
+
+          for FILE in \
+            vmlinuz-6.6.66 \
+            uInitrd-6.6.66 \
+            initrd.img-6.6.66 \
+            config-6.6.66 \
+            System.map-6.6.66
+          do
+
+            if [ -f "$KROOT/$FILE" ]; then
+
+              echo "Installing:"
+              echo "$FILE"
+
+              sudo cp \
+                -f \
+                "$KROOT/$FILE" \
+                "/mnt/boot/$FILE"
+
+            fi
+
+          done
+
+          echo
+          echo "=== Installed kernel ==="
+
+          sudo ls -lh /mnt/boot/*6.6.66* || true
+
+      # ============================================================
+      # INSTALL S905X4 DTB
+      # ============================================================
+
+      - name: Install S905X4 DTB
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Installing DTB:"
+          echo "$DTB_PATH"
+
+          sudo mkdir -p \
+            /mnt/boot/dtb/amlogic
+
+          sudo cp \
+            -f \
+            "$DTB_PATH" \
+            "/mnt/boot/dtb/amlogic/${{ inputs.dtb }}"
+
+          # Also put a copy at boot root.
+          sudo cp \
+            -f \
+            "$DTB_PATH" \
+            "/mnt/boot/${{ inputs.dtb }}"
+
+          echo
+          echo "=== DTB installed ==="
+
+          ls -lh \
+            "/mnt/boot/dtb/amlogic/${{ inputs.dtb }}"
+
+      # ============================================================
+      # INSTALL MODULES
+      # ============================================================
 
       - name: Install modules 6.6.66
         shell: bash
         run: |
           set -euo pipefail
 
-          # The supplied modules archive contains 6.6.66/kernel/...
-          test -d modules-files/6.6.66 || {
-            echo 'modules-files/6.6.66 not found';
-            find modules-files -maxdepth 3 -print;
-            exit 1;
-          }
+          echo "=== Module archive ==="
 
-          sudo mkdir -p /mnt/openwrt-rootfs/lib/modules/6.6.66
-          sudo rsync -a modules-files/6.6.66/ \
-            /mnt/openwrt-rootfs/lib/modules/6.6.66/
+          find modules-files \
+            -maxdepth 3 \
+            -type d \
+            -print
 
-          # Rebuild module dependency metadata inside the OpenWrt rootfs.
-          if [ -x /mnt/openwrt-rootfs/sbin/depmod ]; then
-            sudo chroot /mnt/openwrt-rootfs /sbin/depmod -a 6.6.66 || true
-          elif command -v depmod >/dev/null 2>&1; then
-            sudo depmod -b /mnt/openwrt-rootfs 6.6.66 || true
+          # --------------------------------------------------------
+          # Expected structure:
+          #
+          # modules-files/
+          # └── 6.6.66/
+          #     └── kernel/
+          # --------------------------------------------------------
+
+          if [ ! -d "modules-files/6.6.66" ]; then
+
+            echo "::error::6.6.66 module directory not found."
+
+            find modules-files \
+              -maxdepth 4 \
+              -print
+
+            exit 1
           fi
 
-      - name: Show boot files and boot configuration
+          sudo mkdir -p \
+            /mnt/rootfs/lib/modules/6.6.66
+
+          sudo rsync \
+            -a \
+            "modules-files/6.6.66/" \
+            "/mnt/rootfs/lib/modules/6.6.66/"
+
+          echo
+          echo "=== Installed modules ==="
+
+          sudo find \
+            /mnt/rootfs/lib/modules/6.6.66 \
+            -type f | head -100
+
+      # ============================================================
+      # DEPmod
+      # ============================================================
+
+      - name: Generate module dependency
         shell: bash
         run: |
           set -euo pipefail
-          echo '=== final boot files ==='
-          sudo find /mnt/openwrt-boot -maxdepth 3 -type f -printf '%p %k KB\n' | sort
 
-          echo '=== extlinux/uEnv/boot scripts ==='
-          sudo find /mnt/openwrt-boot -maxdepth 3 \
-            \( -name 'extlinux.conf' -o -name 'uEnv.txt' -o -name 'boot.scr' -o -name 'boot.cmd' \) \
+          if [ -x /mnt/rootfs/sbin/depmod ]; then
+
+            sudo chroot \
+              /mnt/rootfs \
+              /sbin/depmod \
+              -a \
+              6.6.66 || true
+
+          else
+
+            echo "OpenWrt depmod not found."
+
+            # Generate basic metadata using host depmod.
+            sudo depmod \
+              -b /mnt/rootfs \
+              6.6.66 || true
+
+          fi
+
+      # ============================================================
+      # SHOW BOOT CONFIGURATION
+      # ============================================================
+
+      - name: Inspect boot configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== Boot directory ==="
+
+          sudo find /mnt/boot \
+            -maxdepth 3 \
+            -type f \
+            -print | sort
+
+          echo
+          echo "=== extlinux ==="
+
+          if [ -d /mnt/boot/extlinux ]; then
+
+            sudo find /mnt/boot/extlinux \
+              -type f \
+              -maxdepth 2 \
+              -print \
+              -exec sh -c \
+              'echo "----- $1"; sed -n "1,240p" "$1"' \
+              _ {} \;
+
+          fi
+
+          echo
+          echo "=== uEnv ==="
+
+          for FILE in \
+            /mnt/boot/uEnv.txt \
+            /mnt/boot/boot.cmd
+          do
+
+            if [ -f "$FILE" ]; then
+
+              echo "----- $FILE"
+
+              sudo sed \
+                -n \
+                '1,240p' \
+                "$FILE"
+
+            fi
+
+          done
+
+      # ============================================================
+      # DO NOT OVERWRITE ORIGINAL BOOT SCRIPT
+      # ============================================================
+
+      - name: Prepare S905X4 boot files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # --------------------------------------------------------
+          # IMPORTANT:
+          #
+          # We do NOT replace boot.scr/uEnv.txt automatically.
+          # The original boot mechanism of the source image is kept.
+          #
+          # Kernel/DTB/initrd are installed alongside the original
+          # boot files.
+          # --------------------------------------------------------
+
+          echo "Original boot mechanism preserved."
+
+          echo
+          echo "Available custom files:"
+
+          sudo find /mnt/boot \
+            -maxdepth 3 \
+            -type f \
+            \( \
+              -name "*6.6.66*" \
+              -o \
+              -name "${{ inputs.dtb }}" \
+            \) \
             -print
 
-          echo '=== kernel size ==='
-          sudo ls -lh /mnt/openwrt-boot/vmlinuz-6.6.66 \
-            /mnt/openwrt-boot/uInitrd-6.6.66 2>/dev/null || true
+      # ============================================================
+      # SYNC
+      # ============================================================
 
-      - name: Flush and unmount
+      - name: Sync filesystem
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo sync
+
+      # ============================================================
+      # UNMOUNT
+      # ============================================================
+
+      - name: Unmount filesystems
         if: always()
         shell: bash
         run: |
           set +e
+
           sudo sync
-          sudo umount /mnt/openwrt-boot 2>/dev/null || true
-          sudo umount /mnt/openwrt-rootfs 2>/dev/null || true
+
+          # /boot may be a bind mount or real partition.
+          sudo umount /mnt/boot 2>/dev/null || true
+
+          sudo umount /mnt/rootfs 2>/dev/null || true
+
           if [ -n "${LOOPDEV:-}" ]; then
             sudo losetup -d "$LOOPDEV" 2>/dev/null || true
           fi
 
-      - name: Create compressed image
+      # ============================================================
+      # VERIFY IMAGE
+      # ============================================================
+
+      - name: Verify output image
         shell: bash
         run: |
           set -euo pipefail
-          OUT="OpenWrt-S905X4-6.6.66-${{ inputs.dtb }}.img.gz"
-          gzip -1 -c source.img > "$OUT"
-          sha256sum "$OUT" | tee SHA256SUMS
-          ls -lh "$OUT" SHA256SUMS
+
+          test -f source.img
+
+          echo "=== Final image ==="
+
+          ls -lh source.img
+
+          file source.img
+
+          echo
+          echo "=== Final partition table ==="
+
+          sudo fdisk -l source.img || true
+
+      # ============================================================
+      # COMPRESS
+      # ============================================================
+
+      - name: Compress final image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OUTPUT="OpenWrt-S905X4-6.6.66-${{ inputs.dtb }}.img.gz"
+
+          gzip \
+            -1 \
+            -c \
+            source.img \
+            > "$OUTPUT"
+
+          sha256sum "$OUTPUT" > SHA256SUMS
+
+          echo
+          echo "=== OUTPUT ==="
+
+          ls -lh "$OUTPUT"
+
+          echo
+          cat SHA256SUMS
+
+      # ============================================================
+      # UPLOAD ARTIFACT
+      # ============================================================
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
           name: OpenWrt-S905X4-6.6.66-${{ inputs.dtb }}
+          retention-days: 14
           path: |
             OpenWrt-S905X4-6.6.66-${{ inputs.dtb }}.img.gz
             SHA256SUMS
-
-      - name: Publish GitHub Release
-        if: success()
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: "S905X4-6.6.66-${{ github.run_number }}"
-          name: "OpenWrt S905X4 6.6.66 #${{ github.run_number }}"
-          files: |
-            OpenWrt-S905X4-6.6.66-${{ inputs.dtb }}.img.gz
-            SHA256SUMS
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
